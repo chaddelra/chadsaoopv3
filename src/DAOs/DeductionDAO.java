@@ -1,25 +1,50 @@
 package DAOs;
 
 import Models.DeductionModel;
+import Models.DeductionModel.DeductionType;
+import java.math.BigDecimal;
 import java.sql.*;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.ArrayList;
 
+/**
+ * DeductionDAO - Data Access Object for DeductionModel
+ * Handles all database operations for government deductions and tax calculations
+ * @author User
+ */
 public class DeductionDAO {
     
-    public boolean addDeduction(DeductionModel deduction) {
-        String sql = "INSERT INTO deduction (typeName, deductionAmount, lowerLimit, upperLimit, baseTax, deductionRate, payrollId) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    private final DatabaseConnection databaseConnection;
+    
+    public DeductionDAO(DatabaseConnection databaseConnection) {
+        this.databaseConnection = databaseConnection;
+    }
+    
+    /**
+     * Create - Insert new deduction rule
+     * @param deduction
+     * @return 
+     */
+    public boolean save(DeductionModel deduction) {
+        String sql = "INSERT INTO deduction (typeName, deductionAmount, lowerLimit, upperLimit, baseTax, deductionRate, payrollId) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             
-            pstmt.setString(1, deduction.getDeductionType().getDisplayName());
-            pstmt.setBigDecimal(2, deduction.getAmount());
+            pstmt.setString(1, deduction.getTypeName().name());
+            pstmt.setBigDecimal(2, deduction.getDeductionAmount());
             pstmt.setBigDecimal(3, deduction.getLowerLimit());
             pstmt.setBigDecimal(4, deduction.getUpperLimit());
             pstmt.setBigDecimal(5, deduction.getBaseTax());
             pstmt.setBigDecimal(6, deduction.getDeductionRate());
-            pstmt.setInt(7, deduction.getPayPeriodId()); // This maps to payrollId in database
+            
+            // Handle optional payrollId
+            if (deduction.getPayrollId() != null) {
+                pstmt.setInt(7, deduction.getPayrollId());
+            } else {
+                pstmt.setNull(7, Types.INTEGER);
+            }
             
             int affectedRows = pstmt.executeUpdate();
             
@@ -31,484 +56,526 @@ public class DeductionDAO {
                 }
                 return true;
             }
-            
         } catch (SQLException e) {
-            System.err.println("Error adding deduction: " + e.getMessage());
+            System.err.println("Error saving deduction: " + e.getMessage());
         }
         return false;
     }
     
-    public DeductionModel getDeductionById(int deductionId) {
+    /**
+     * Read - Find deduction by ID
+     * @param deductionId
+     * @return 
+     */
+    public DeductionModel findById(Integer deductionId) {
         String sql = "SELECT * FROM deduction WHERE deductionId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, deductionId);
             ResultSet rs = pstmt.executeQuery();
             
             if (rs.next()) {
-                return extractDeductionFromResultSet(rs);
+                return mapResultSetToDeduction(rs);
             }
-            
         } catch (SQLException e) {
-            System.err.println("Error getting deduction by ID: " + e.getMessage());
+            System.err.println("Error finding deduction: " + e.getMessage());
         }
         return null;
     }
     
-    public List<DeductionModel> getDeductionsByPayPeriodId(int payPeriodId) {
+    /**
+     * Read - Find deductions by type (SSS, PhilHealth, etc.)
+     * @param deductionType
+     * @return 
+     */
+    public List<DeductionModel> findByType(DeductionType deductionType) {
         List<DeductionModel> deductions = new ArrayList<>();
-        String sql = "SELECT d.* FROM deduction d " +
-                    "JOIN payroll p ON d.payrollId = p.payrollId " +
-                    "WHERE p.payPeriodId = ?";
+        String sql = "SELECT * FROM deduction WHERE typeName = ? AND payrollId IS NULL ORDER BY lowerLimit";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            pstmt.setInt(1, payPeriodId);
+            pstmt.setString(1, deductionType.name());
             ResultSet rs = pstmt.executeQuery();
             
             while (rs.next()) {
-                deductions.add(extractDeductionFromResultSet(rs));
+                deductions.add(mapResultSetToDeduction(rs));
             }
-            
         } catch (SQLException e) {
-            System.err.println("Error getting deductions by pay period ID: " + e.getMessage());
+            System.err.println("Error finding deductions by type: " + e.getMessage());
         }
         return deductions;
     }
     
-    public List<DeductionModel> getDeductionsByEmployeeId(int employeeId) {
+    /**
+     * Read - Find deductions for a specific payroll
+     * @param payrollId
+     * @return 
+     */
+    public List<DeductionModel> findByPayrollId(Integer payrollId) {
         List<DeductionModel> deductions = new ArrayList<>();
-        String sql = "SELECT d.*, p.employeeId FROM deduction d " +
-                    "JOIN payroll p ON d.payrollId = p.payrollId " +
-                    "WHERE p.employeeId = ?";
+        String sql = "SELECT * FROM deduction WHERE payrollId = ? ORDER BY typeName";
         
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setInt(1, employeeId);
-            ResultSet rs = pstmt.executeQuery();
-            
-            while (rs.next()) {
-                deductions.add(extractDeductionFromResultSet(rs));
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting deductions by employee ID: " + e.getMessage());
-        }
-        return deductions;
-    }
-    
-    public List<DeductionModel> getDeductionsByType(DeductionModel.DeductionType deductionType) {
-        List<DeductionModel> deductions = new ArrayList<>();
-        String sql = "SELECT * FROM deduction WHERE typeName = ?";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setString(1, deductionType.getDisplayName());
-            ResultSet rs = pstmt.executeQuery();
-            
-            while (rs.next()) {
-                deductions.add(extractDeductionFromResultSet(rs));
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting deductions by type: " + e.getMessage());
-        }
-        return deductions;
-    }
-    
-    public List<DeductionModel> getDeductionsByPayrollId(int payrollId) {
-        List<DeductionModel> deductions = new ArrayList<>();
-        String sql = "SELECT * FROM deduction WHERE payrollId = ?";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, payrollId);
             ResultSet rs = pstmt.executeQuery();
             
             while (rs.next()) {
-                deductions.add(extractDeductionFromResultSet(rs));
+                deductions.add(mapResultSetToDeduction(rs));
             }
-            
         } catch (SQLException e) {
-            System.err.println("Error getting deductions by payroll ID: " + e.getMessage());
+            System.err.println("Error finding deductions by payroll: " + e.getMessage());
         }
         return deductions;
     }
     
-    public boolean updateDeduction(DeductionModel deduction) {
-        String sql = "UPDATE deduction SET typeName = ?, deductionAmount = ?, lowerLimit = ?, upperLimit = ?, baseTax = ?, deductionRate = ?, payrollId = ? WHERE deductionId = ?";
+    /**
+     * Read - Get all global deduction rules (not tied to specific payroll)
+     * @return 
+     */
+    public List<DeductionModel> findGlobalRules() {
+        List<DeductionModel> deductions = new ArrayList<>();
+        String sql = "SELECT * FROM deduction WHERE payrollId IS NULL ORDER BY typeName, lowerLimit";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            
+            while (rs.next()) {
+                deductions.add(mapResultSetToDeduction(rs));
+            }
+        } catch (SQLException e) {
+            System.err.println("Error retrieving global deduction rules: " + e.getMessage());
+        }
+        return deductions;
+    }
+    
+    /**
+     * Update existing deduction
+     * @param deduction
+     * @return 
+     */
+    public boolean update(DeductionModel deduction) {
+        if (deduction.getDeductionId() == null || deduction.getDeductionId() <= 0) {
+            System.err.println("Cannot update deduction: Invalid deduction ID");
+            return false;
+        }
+        
+        String sql = "UPDATE deduction SET typeName = ?, deductionAmount = ?, lowerLimit = ?, " +
+                    "upperLimit = ?, baseTax = ?, deductionRate = ?, payrollId = ? WHERE deductionId = ?";
+        
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            pstmt.setString(1, deduction.getDeductionType().getDisplayName());
-            pstmt.setBigDecimal(2, deduction.getAmount());
+            pstmt.setString(1, deduction.getTypeName().name());
+            pstmt.setBigDecimal(2, deduction.getDeductionAmount());
             pstmt.setBigDecimal(3, deduction.getLowerLimit());
             pstmt.setBigDecimal(4, deduction.getUpperLimit());
             pstmt.setBigDecimal(5, deduction.getBaseTax());
             pstmt.setBigDecimal(6, deduction.getDeductionRate());
-            pstmt.setInt(7, deduction.getPayPeriodId()); // Maps to payrollId in database
+            
+            if (deduction.getPayrollId() != null) {
+                pstmt.setInt(7, deduction.getPayrollId());
+            } else {
+                pstmt.setNull(7, Types.INTEGER);
+            }
+            
             pstmt.setInt(8, deduction.getDeductionId());
             
             return pstmt.executeUpdate() > 0;
-            
         } catch (SQLException e) {
             System.err.println("Error updating deduction: " + e.getMessage());
         }
         return false;
     }
     
-    public boolean deleteDeduction(int deductionId) {
+    /**
+     * Delete deduction
+     * @param deductionId
+     * @return 
+     */
+    public boolean deleteById(Integer deductionId) {
         String sql = "DELETE FROM deduction WHERE deductionId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, deductionId);
             return pstmt.executeUpdate() > 0;
-            
         } catch (SQLException e) {
             System.err.println("Error deleting deduction: " + e.getMessage());
         }
         return false;
     }
     
-    public List<DeductionModel> getAllDeductions() {
-        List<DeductionModel> deductions = new ArrayList<>();
-        String sql = "SELECT * FROM deduction ORDER BY deductionId";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                deductions.add(extractDeductionFromResultSet(rs));
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting all deductions: " + e.getMessage());
-        }
-        return deductions;
-    }
-    
     /**
-     * Gets deductions for an employee within a specific pay period
-     * @param employeeId Employee ID
-     * @param payPeriodId Pay period ID
-     * @return List of deductions for the employee in the pay period
+     * Delete all deductions for a payroll
+     * @param payrollId
+     * @return 
      */
-    public List<DeductionModel> getDeductionsByEmployeeAndPeriod(int employeeId, int payPeriodId) {
-        List<DeductionModel> deductions = new ArrayList<>();
-        String sql = "SELECT d.*, p.employeeId FROM deduction d " +
-                    "JOIN payroll p ON d.payrollId = p.payrollId " +
-                    "WHERE p.employeeId = ? AND p.payPeriodId = ?";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setInt(1, employeeId);
-            pstmt.setInt(2, payPeriodId);
-            ResultSet rs = pstmt.executeQuery();
-            
-            while (rs.next()) {
-                deductions.add(extractDeductionFromResultSet(rs));
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting deductions by employee and period: " + e.getMessage());
-        }
-        return deductions;
-    }
-    
-    /**
-     * Gets master deduction rules (templates) from database
-     * These are deductions where payrollId is NULL - they serve as calculation templates
-     * @return List of master deduction rules
-     */
-    public List<DeductionModel> getMasterDeductionRules() {
-        List<DeductionModel> rules = new ArrayList<>();
-        String sql = "SELECT * FROM deduction WHERE payrollId IS NULL ORDER BY typeName, lowerLimit";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                rules.add(extractDeductionFromResultSet(rs));
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting master deduction rules: " + e.getMessage());
-        }
-        return rules;
-    }
-    
-    /**
-     * Gets master deduction rules for a specific type
-     * @param deductionType The type of deduction
-     * @return List of deduction rules for the specified type
-     */
-    public List<DeductionModel> getMasterDeductionRulesByType(DeductionModel.DeductionType deductionType) {
-        List<DeductionModel> rules = new ArrayList<>();
-        String sql = "SELECT * FROM deduction WHERE payrollId IS NULL AND typeName = ? ORDER BY lowerLimit";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setString(1, deductionType.getDisplayName());
-            ResultSet rs = pstmt.executeQuery();
-            
-            while (rs.next()) {
-                rules.add(extractDeductionFromResultSet(rs));
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting master deduction rules by type: " + e.getMessage());
-        }
-        return rules;
-    }
-    
-    /**
-     * Creates standard deductions for an employee's payroll using database-driven calculations
-     * @param employeeId Employee ID
-     * @param payrollId Payroll ID
-     * @param grossIncome Employee's gross income for SSS calculation
-     * @param monthlySalary Employee's monthly salary for other calculations
-     * @return true if all deductions were created successfully
-     */
-    public boolean createStandardDeductions(int employeeId, int payrollId, java.math.BigDecimal grossIncome, java.math.BigDecimal monthlySalary) {
-        try {
-            // Get all master deduction rules from database
-            List<DeductionModel> allRules = getMasterDeductionRules();
-            
-            if (allRules.isEmpty()) {
-                System.err.println("No master deduction rules found in database");
-                return false;
-            }
-            
-            // Filter rules by type for calculations
-            List<DeductionModel> sssRules = DeductionModel.filterDeductionsByType(allRules, DeductionModel.DeductionType.SSS);
-            List<DeductionModel> philHealthRules = DeductionModel.filterDeductionsByType(allRules, DeductionModel.DeductionType.PHILHEALTH);
-            List<DeductionModel> pagIbigRules = DeductionModel.filterDeductionsByType(allRules, DeductionModel.DeductionType.PAG_IBIG);
-            List<DeductionModel> taxRules = DeductionModel.filterDeductionsByType(allRules, DeductionModel.DeductionType.WITHHOLDING_TAX);
-            
-            // Calculate deduction amounts using database rules
-            java.math.BigDecimal sssAmount = DeductionModel.calculateSSSDeduction(grossIncome, sssRules);
-            java.math.BigDecimal philHealthAmount = DeductionModel.calculatePhilHealthDeduction(monthlySalary, philHealthRules);
-            java.math.BigDecimal pagIbigAmount = DeductionModel.calculatePagIbigDeduction(monthlySalary, pagIbigRules);
-            
-            // Calculate taxable income for withholding tax
-            java.math.BigDecimal taxableIncome = monthlySalary.subtract(sssAmount).subtract(philHealthAmount).subtract(pagIbigAmount);
-            java.math.BigDecimal taxAmount = DeductionModel.calculateWithholdingTax(taxableIncome, taxRules);
-            
-            // Create SSS deduction
-            DeductionModel sssDeduction = new DeductionModel();
-            sssDeduction.setEmployeeId(employeeId);
-            sssDeduction.setDeductionType(DeductionModel.DeductionType.SSS);
-            sssDeduction.setAmount(sssAmount);
-            sssDeduction.setPayPeriodId(payrollId); // Maps to payrollId in database
-            
-            // Create PhilHealth deduction
-            DeductionModel philhealthDeduction = new DeductionModel();
-            philhealthDeduction.setEmployeeId(employeeId);
-            philhealthDeduction.setDeductionType(DeductionModel.DeductionType.PHILHEALTH);
-            philhealthDeduction.setAmount(philHealthAmount);
-            philhealthDeduction.setPayPeriodId(payrollId);
-            
-            // Create Pag-IBIG deduction
-            DeductionModel pagibigDeduction = new DeductionModel();
-            pagibigDeduction.setEmployeeId(employeeId);
-            pagibigDeduction.setDeductionType(DeductionModel.DeductionType.PAG_IBIG);
-            pagibigDeduction.setAmount(pagIbigAmount);
-            pagibigDeduction.setPayPeriodId(payrollId);
-            
-            // Create Withholding Tax deduction
-            DeductionModel withholdingTaxDeduction = new DeductionModel();
-            withholdingTaxDeduction.setEmployeeId(employeeId);
-            withholdingTaxDeduction.setDeductionType(DeductionModel.DeductionType.WITHHOLDING_TAX);
-            withholdingTaxDeduction.setAmount(taxAmount);
-            withholdingTaxDeduction.setPayPeriodId(payrollId);
-            
-            // Add all deductions
-            boolean success = true;
-            success &= addDeduction(sssDeduction);
-            success &= addDeduction(philhealthDeduction);
-            success &= addDeduction(pagibigDeduction);
-            success &= addDeduction(withholdingTaxDeduction);
-            
-            return success;
-            
-        } catch (Exception e) {
-            System.err.println("Error creating standard deductions: " + e.getMessage());
-            e.printStackTrace();
-            return false;
-        }
-    }
-    
-    /**
-     * Creates a late deduction for rank-and-file employees
-     * @param employeeId Employee ID
-     * @param payrollId Payroll ID
-     * @param hourlyRate Employee's hourly rate
-     * @param lateHours Number of late hours
-     * @return true if late deduction was created successfully
-     */
-    public boolean createLateDeduction(int employeeId, int payrollId, java.math.BigDecimal hourlyRate, java.math.BigDecimal lateHours) {
-        try {
-            java.math.BigDecimal lateAmount = DeductionModel.calculateLateDeduction(hourlyRate, lateHours);
-            
-            if (lateAmount.compareTo(java.math.BigDecimal.ZERO) <= 0) {
-                return true; // No late deduction needed
-            }
-            
-            DeductionModel lateDeduction = new DeductionModel();
-            lateDeduction.setEmployeeId(employeeId);
-            lateDeduction.setDeductionType(DeductionModel.DeductionType.LATE_DEDUCTION);
-            lateDeduction.setAmount(lateAmount);
-            lateDeduction.setPayPeriodId(payrollId);
-            
-            return addDeduction(lateDeduction);
-            
-        } catch (Exception e) {
-            System.err.println("Error creating late deduction: " + e.getMessage());
-            return false;
-        }
-    }
-    
-    /**
-     * Gets total deductions for a specific payroll
-     * @param payrollId Payroll ID
-     * @return Total deduction amount
-     */
-    public java.math.BigDecimal getTotalDeductionsForPayroll(int payrollId) {
-        String sql = "SELECT SUM(deductionAmount) FROM deduction WHERE payrollId = ?";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setInt(1, payrollId);
-            ResultSet rs = pstmt.executeQuery();
-            
-            if (rs.next()) {
-                java.math.BigDecimal total = rs.getBigDecimal(1);
-                return total != null ? total : java.math.BigDecimal.ZERO;
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting total deductions for payroll: " + e.getMessage());
-        }
-        
-        return java.math.BigDecimal.ZERO;
-    }
-    
-    /**
-     * Gets total deductions by type for a specific payroll
-     * @param payrollId Payroll ID
-     * @param deductionType Type of deduction
-     * @return Total deduction amount for the specified type
-     */
-    public java.math.BigDecimal getTotalDeductionsByTypeForPayroll(int payrollId, DeductionModel.DeductionType deductionType) {
-        String sql = "SELECT SUM(deductionAmount) FROM deduction WHERE payrollId = ? AND typeName = ?";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setInt(1, payrollId);
-            pstmt.setString(2, deductionType.getDisplayName());
-            ResultSet rs = pstmt.executeQuery();
-            
-            if (rs.next()) {
-                java.math.BigDecimal total = rs.getBigDecimal(1);
-                return total != null ? total : java.math.BigDecimal.ZERO;
-            }
-            
-        } catch (SQLException e) {
-            System.err.println("Error getting total deductions by type for payroll: " + e.getMessage());
-        }
-        
-        return java.math.BigDecimal.ZERO;
-    }
-    
-    /**
-     * Deletes all deductions for a specific payroll
-     * @param payrollId Payroll ID
-     * @return true if deletion was successful
-     */
-    public boolean deleteDeductionsForPayroll(int payrollId) {
+    public boolean deleteByPayrollId(Integer payrollId) {
         String sql = "DELETE FROM deduction WHERE payrollId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, payrollId);
-            pstmt.executeUpdate();
-            return true;
+            return pstmt.executeUpdate() >= 0;
+        } catch (SQLException e) {
+            System.err.println("Error deleting deductions by payroll: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    /**
+     * Calculate SSS deduction based on monthly salary
+     * @param monthlySalary
+     * @return 
+     */
+    public BigDecimal calculateSSSDeduction(BigDecimal monthlySalary) {
+        String sql = "SELECT deductionAmount FROM deduction " +
+                    "WHERE typeName = 'SSS' AND payrollId IS NULL " +
+                    "AND ? >= lowerLimit AND ? <= upperLimit " +
+                    "LIMIT 1";
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setBigDecimal(1, monthlySalary);
+            pstmt.setBigDecimal(2, monthlySalary);
+            ResultSet rs = pstmt.executeQuery();
+            
+            if (rs.next()) {
+                return rs.getBigDecimal("deductionAmount");
+            }
+        } catch (SQLException e) {
+            System.err.println("Error calculating SSS deduction: " + e.getMessage());
+        }
+        return BigDecimal.ZERO;
+    }
+    
+    /**
+     * Calculate PhilHealth deduction based on monthly salary
+     * @param monthlySalary
+     * @return 
+     */
+    public BigDecimal calculatePhilHealthDeduction(BigDecimal monthlySalary) {
+        String sql = "SELECT deductionAmount, deductionRate FROM deduction " +
+                    "WHERE typeName = 'PhilHealth' AND payrollId IS NULL " +
+                    "LIMIT 1";
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            ResultSet rs = pstmt.executeQuery();
+            
+            if (rs.next()) {
+                BigDecimal rate = rs.getBigDecimal("deductionRate");
+                BigDecimal fixedAmount = rs.getBigDecimal("deductionAmount");
+                
+                // If rate is specified, calculate percentage; otherwise use fixed amount
+                if (rate != null && rate.compareTo(BigDecimal.ZERO) > 0) {
+                    return monthlySalary.multiply(rate).setScale(2, java.math.RoundingMode.HALF_UP);
+                } else if (fixedAmount != null) {
+                    return fixedAmount;
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error calculating PhilHealth deduction: " + e.getMessage());
+        }
+        return BigDecimal.ZERO;
+    }
+    
+    /**
+     * Calculate Pag-IBIG deduction (2% of monthly salary, max ₱100)
+     * @param monthlySalary
+     * @return 
+     */
+    public BigDecimal calculatePagIbigDeduction(BigDecimal monthlySalary) {
+        // Standard Pag-IBIG calculation: 2% of monthly salary, max ₱100
+        BigDecimal rate = new BigDecimal("0.02"); // 2%
+        BigDecimal maxDeduction = new BigDecimal("100.00");
+        
+        BigDecimal calculated = monthlySalary.multiply(rate).setScale(2, java.math.RoundingMode.HALF_UP);
+        
+        // Return the smaller of calculated amount or maximum
+        return calculated.compareTo(maxDeduction) > 0 ? maxDeduction : calculated;
+    }
+    
+    /**
+     * Calculate withholding tax based on taxable income
+     * @param taxableIncome
+     * @return 
+     */
+    public BigDecimal calculateWithholdingTax(BigDecimal taxableIncome) {
+        String sql = "SELECT deductionAmount, lowerLimit, upperLimit, baseTax, deductionRate FROM deduction " +
+                    "WHERE typeName = 'Withholding Tax' AND payrollId IS NULL " +
+                    "AND ? >= lowerLimit AND ? <= upperLimit " +
+                    "ORDER BY lowerLimit " +
+                    "LIMIT 1";
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setBigDecimal(1, taxableIncome);
+            pstmt.setBigDecimal(2, taxableIncome);
+            ResultSet rs = pstmt.executeQuery();
+            
+            if (rs.next()) {
+                BigDecimal baseTax = rs.getBigDecimal("baseTax");
+                BigDecimal rate = rs.getBigDecimal("deductionRate");
+                BigDecimal lowerLimit = rs.getBigDecimal("lowerLimit");
+                BigDecimal fixedAmount = rs.getBigDecimal("deductionAmount");
+                
+                // If progressive tax (has base tax and rate)
+                if (baseTax != null && rate != null && lowerLimit != null) {
+                    BigDecimal excessAmount = taxableIncome.subtract(lowerLimit);
+                    return baseTax.add(excessAmount.multiply(rate)).setScale(2, java.math.RoundingMode.HALF_UP);
+                }
+                // If fixed amount
+                else if (fixedAmount != null) {
+                    return fixedAmount;
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error calculating withholding tax: " + e.getMessage());
+        }
+        return BigDecimal.ZERO;
+    }
+    
+    /**
+     * Calculate late deduction based on hours late
+     * @param hoursLate
+     * @param hourlyRate
+     * @return 
+     */
+    public BigDecimal calculateLateDeduction(BigDecimal hoursLate, BigDecimal hourlyRate) {
+        if (hoursLate == null || hourlyRate == null) {
+            return BigDecimal.ZERO;
+        }
+        
+        // Late deduction = hours late × hourly rate
+        return hoursLate.multiply(hourlyRate).setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+    
+    /**
+     * Get total deductions for a salary amount
+     * @param monthlySalary
+     * @param taxableIncome
+     * @return 
+     */
+    public DeductionSummary calculateAllDeductions(BigDecimal monthlySalary, BigDecimal taxableIncome) {
+        DeductionSummary summary = new DeductionSummary();
+        
+        summary.setSssDeduction(calculateSSSDeduction(monthlySalary));
+        summary.setPhilhealthDeduction(calculatePhilHealthDeduction(monthlySalary));
+        summary.setPagibigDeduction(calculatePagIbigDeduction(monthlySalary));
+        summary.setWithholdingTax(calculateWithholdingTax(taxableIncome));
+        
+        // Calculate total
+        BigDecimal total = summary.getSssDeduction()
+                .add(summary.getPhilhealthDeduction())
+                .add(summary.getPagibigDeduction())
+                .add(summary.getWithholdingTax());
+        summary.setTotalDeductions(total);
+        
+        return summary;
+    }
+    
+    /**
+     * Initialize default government deduction rules
+     * This method sets up the standard deduction brackets and rates
+     * @return 
+     */
+    public boolean initializeDefaultRules() {
+        try (Connection conn = databaseConnection.createConnection()) {
+            conn.setAutoCommit(false);
+            
+            try {
+                // Clear existing rules
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.executeUpdate("DELETE FROM deduction WHERE payrollId IS NULL");
+                }
+                
+                // Insert SSS brackets (2024 rates)
+                insertSSSRules(conn);
+                
+                // Insert PhilHealth rules
+                insertPhilHealthRules(conn);
+                
+                // Insert Withholding Tax brackets
+                insertWithholdingTaxRules(conn);
+                
+                conn.commit();
+                System.out.println("✅ Default deduction rules initialized successfully");
+                return true;
+                
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            }
             
         } catch (SQLException e) {
-            System.err.println("Error deleting deductions for payroll: " + e.getMessage());
+            System.err.println("Error initializing default rules: " + e.getMessage());
             return false;
         }
     }
     
     /**
-     * Checks if deduction rules exist in the database
-     * @return true if master deduction rules are properly configured
+     * Helper method to insert SSS contribution tables
      */
-    public boolean areDeductionRulesConfigured() {
-        List<DeductionModel> rules = getMasterDeductionRules();
+    private void insertSSSRules(Connection conn) throws SQLException {
+        String sql = "INSERT INTO deduction (typeName, deductionAmount, lowerLimit, upperLimit) VALUES (?, ?, ?, ?)";
         
-        // Check if we have at least one rule for each mandatory deduction type
-        boolean hasSSSRules = rules.stream().anyMatch(r -> r.getDeductionType() == DeductionModel.DeductionType.SSS);
-        boolean hasPhilHealthRules = rules.stream().anyMatch(r -> r.getDeductionType() == DeductionModel.DeductionType.PHILHEALTH);
-        boolean hasPagIbigRules = rules.stream().anyMatch(r -> r.getDeductionType() == DeductionModel.DeductionType.PAG_IBIG);
-        boolean hasTaxRules = rules.stream().anyMatch(r -> r.getDeductionType() == DeductionModel.DeductionType.WITHHOLDING_TAX);
-        
-        return hasSSSRules && hasPhilHealthRules && hasPagIbigRules && hasTaxRules;
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            // SSS contribution brackets (sample rates)
+            Object[][] sssRates = {
+                {new BigDecimal("4000"), new BigDecimal("0"), new BigDecimal("4249.99")},
+                {new BigDecimal("4500"), new BigDecimal("4250"), new BigDecimal("4749.99")},
+                {new BigDecimal("5000"), new BigDecimal("4750"), new BigDecimal("5249.99")},
+                // Add more brackets as needed
+                {new BigDecimal("30000"), new BigDecimal("29750"), new BigDecimal("999999.99")}
+            };
+            
+            for (Object[] rate : sssRates) {
+                pstmt.setString(1, "SSS");
+                pstmt.setBigDecimal(2, (BigDecimal) rate[0]);
+                pstmt.setBigDecimal(3, (BigDecimal) rate[1]);
+                pstmt.setBigDecimal(4, (BigDecimal) rate[2]);
+                pstmt.addBatch();
+            }
+            
+            pstmt.executeBatch();
+        }
     }
     
-    private DeductionModel extractDeductionFromResultSet(ResultSet rs) throws SQLException {
-        DeductionModel deduction = new DeductionModel();
-        deduction.setDeductionId(rs.getInt("deductionId"));
+    /**
+     * Helper method to insert PhilHealth rules
+     */
+    private void insertPhilHealthRules(Connection conn) throws SQLException {
+        String sql = "INSERT INTO deduction (typeName, deductionRate) VALUES (?, ?)";
         
-        // Convert database typeName to enum
-        String typeName = rs.getString("typeName");
-        try {
-            deduction.setDeductionType(DeductionModel.DeductionType.fromString(typeName));
-        } catch (IllegalArgumentException e) {
-            System.err.println("Unknown deduction type in database: " + typeName);
-            // Set a default or handle as needed
-            deduction.setDeductionType(DeductionModel.DeductionType.SSS);
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, "PhilHealth");
+            pstmt.setBigDecimal(2, new BigDecimal("0.0275")); // 2.75% employee share
+            pstmt.executeUpdate();
         }
+    }
+    
+    /**
+     * Helper method to insert withholding tax brackets
+     */
+    private void insertWithholdingTaxRules(Connection conn) throws SQLException {
+        String sql = "INSERT INTO deduction (typeName, lowerLimit, upperLimit, baseTax, deductionRate) VALUES (?, ?, ?, ?, ?)";
         
-        deduction.setAmount(rs.getBigDecimal("deductionAmount"));
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            // Philippine withholding tax brackets (sample)
+            Object[][] taxBrackets = {
+                {new BigDecimal("0"), new BigDecimal("20833"), new BigDecimal("0"), new BigDecimal("0")},
+                {new BigDecimal("20834"), new BigDecimal("33333"), new BigDecimal("0"), new BigDecimal("0.20")},
+                {new BigDecimal("33334"), new BigDecimal("66667"), new BigDecimal("2500"), new BigDecimal("0.25")},
+                {new BigDecimal("66668"), new BigDecimal("166667"), new BigDecimal("10833"), new BigDecimal("0.30")},
+                {new BigDecimal("166668"), new BigDecimal("666667"), new BigDecimal("40833"), new BigDecimal("0.32")},
+                {new BigDecimal("666668"), new BigDecimal("999999999"), new BigDecimal("200833"), new BigDecimal("0.35")}
+            };
+            
+            for (Object[] bracket : taxBrackets) {
+                pstmt.setString(1, "Withholding Tax");
+                pstmt.setBigDecimal(2, (BigDecimal) bracket[0]);
+                pstmt.setBigDecimal(3, (BigDecimal) bracket[1]);
+                pstmt.setBigDecimal(4, (BigDecimal) bracket[2]);
+                pstmt.setBigDecimal(5, (BigDecimal) bracket[3]);
+                pstmt.addBatch();
+            }
+            
+            pstmt.executeBatch();
+        }
+    }
+    
+    /**
+     * Check if deduction exists
+     * @param deductionId
+     * @return 
+     */
+    public boolean exists(Integer deductionId) {
+        String sql = "SELECT COUNT(*) FROM deduction WHERE deductionId = ?";
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setInt(1, deductionId);
+            ResultSet rs = pstmt.executeQuery();
+            
+            if (rs.next()) {
+                return rs.getInt(1) > 0;
+            }
+        } catch (SQLException e) {
+            System.err.println("Error checking deduction existence: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    /**
+     * Helper method to map ResultSet to DeductionModel
+     */
+    private DeductionModel mapResultSetToDeduction(ResultSet rs) throws SQLException {
+        DeductionModel deduction = new DeductionModel();
+        
+        deduction.setDeductionId(rs.getInt("deductionId"));
+        deduction.setTypeName(DeductionType.valueOf(rs.getString("typeName")));
+        deduction.setDeductionAmount(rs.getBigDecimal("deductionAmount"));
         deduction.setLowerLimit(rs.getBigDecimal("lowerLimit"));
         deduction.setUpperLimit(rs.getBigDecimal("upperLimit"));
         deduction.setBaseTax(rs.getBigDecimal("baseTax"));
         deduction.setDeductionRate(rs.getBigDecimal("deductionRate"));
         
-        // Map payrollId from database to payPeriodId in model
+        // Handle nullable payrollId
         int payrollId = rs.getInt("payrollId");
         if (!rs.wasNull()) {
-            deduction.setPayPeriodId(payrollId);
-        }
-        
-        // Try to get employeeId if available (from JOIN queries)
-        try {
-            int employeeId = rs.getInt("employeeId");
-            if (!rs.wasNull()) {
-                deduction.setEmployeeId(employeeId);
-            }
-        } catch (SQLException e) {
-            // employeeId column not available in this query - that's okay
-            deduction.setEmployeeId(null);
+            deduction.setPayrollId(payrollId);
         }
         
         return deduction;
+    }
+    
+    /**
+     * Inner class for deduction summary
+     */
+    public static class DeductionSummary {
+        private BigDecimal sssDeduction = BigDecimal.ZERO;
+        private BigDecimal philhealthDeduction = BigDecimal.ZERO;
+        private BigDecimal pagibigDeduction = BigDecimal.ZERO;
+        private BigDecimal withholdingTax = BigDecimal.ZERO;
+        private BigDecimal lateDeduction = BigDecimal.ZERO;
+        private BigDecimal totalDeductions = BigDecimal.ZERO;
+        
+        // Getters and setters
+        public BigDecimal getSssDeduction() { return sssDeduction; }
+        public void setSssDeduction(BigDecimal sssDeduction) { this.sssDeduction = sssDeduction; }
+        
+        public BigDecimal getPhilhealthDeduction() { return philhealthDeduction; }
+        public void setPhilhealthDeduction(BigDecimal philhealthDeduction) { this.philhealthDeduction = philhealthDeduction; }
+        
+        public BigDecimal getPagibigDeduction() { return pagibigDeduction; }
+        public void setPagibigDeduction(BigDecimal pagibigDeduction) { this.pagibigDeduction = pagibigDeduction; }
+        
+        public BigDecimal getWithholdingTax() { return withholdingTax; }
+        public void setWithholdingTax(BigDecimal withholdingTax) { this.withholdingTax = withholdingTax; }
+        
+        public BigDecimal getLateDeduction() { return lateDeduction; }
+        public void setLateDeduction(BigDecimal lateDeduction) { this.lateDeduction = lateDeduction; }
+        
+        public BigDecimal getTotalDeductions() { return totalDeductions; }
+        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
+        
+        @Override
+        public String toString() {
+            return String.format("Deductions: SSS=₱%.2f, PhilHealth=₱%.2f, Pag-IBIG=₱%.2f, Tax=₱%.2f, Total=₱%.2f",
+                    sssDeduction, philhealthDeduction, pagibigDeduction, withholdingTax, totalDeductions);
+        }
     }
 }

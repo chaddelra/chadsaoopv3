@@ -1,533 +1,544 @@
 
 package Services;
-import DAOs.*;
+
 import Models.*;
+import DAOs.*;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.*;
 import java.time.LocalDate;
-import java.time.YearMonth;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.ArrayList;
 
 /**
- * PayrollService - Core business logic for payroll processing
- * This service orchestrates payroll calculations using multiple DAOs
- * @author User
+ * Enhanced PayrollService that uses database views for complex payroll calculations.
+ * This service implements the business logic using monthly_employee_payslip and 
+ * monthly_payroll_summary_report views as specified in the task document.
+ * @author chad
  */
-
 public class PayrollService {
-   // DAO Dependencies
-    private final DatabaseConnection databaseConnection;
-    private final EmployeeDAO employeeDAO;
-    private final PayrollDAO payrollDAO;
-    private final PayslipDAO payslipDAO;
-    private final AttendanceDAO attendanceDAO;
-    private final OvertimeRequestDAO overtimeDAO;
-    private final DeductionDAO deductionDAO;
-    private final BenefitTypeDAO benefitDAO;
-    private final PayPeriodDAO payPeriodDAO;
+    
+    // Manila timezone constant for payroll system
+    public static final ZoneId MANILA_TIMEZONE = ZoneId.of("Asia/Manila");
+    
+    // DAOs for database operations
+    private PayrollDAO payrollDAO;
+    private PayslipDAO payslipDAO;
+    private EmployeeDAO employeeDAO;
+    private DatabaseConnection databaseConnection;
     
     /**
-     * Constructor - initializes all required DAOs
-     */
-    public PayrollService() {
-        this.databaseConnection = new DatabaseConnection();
-        this.employeeDAO = new EmployeeDAO(databaseConnection);
-        this.payrollDAO = new PayrollDAO(databaseConnection);
-        this.payslipDAO = new PayslipDAO(databaseConnection);
-        this.attendanceDAO = new AttendanceDAO(databaseConnection);
-        this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
-        this.deductionDAO = new DeductionDAO();
-        this.benefitDAO = new BenefitTypeDAO();
-        this.payPeriodDAO = new PayPeriodDAO();
-    }
-    
-    /**
-     * Constructor with custom database connection (for dependency injection)
+     * Constructor with database connection
+     * @param databaseConnection The database connection to use
      */
     public PayrollService(DatabaseConnection databaseConnection) {
         this.databaseConnection = databaseConnection;
-        this.employeeDAO = new EmployeeDAO(databaseConnection);
         this.payrollDAO = new PayrollDAO(databaseConnection);
         this.payslipDAO = new PayslipDAO(databaseConnection);
-        this.attendanceDAO = new AttendanceDAO(databaseConnection);
-        this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
-        this.deductionDAO = new DeductionDAO();
-        this.benefitDAO = new BenefitTypeDAO();
-        this.payPeriodDAO = new PayPeriodDAO();
+        this.employeeDAO = new EmployeeDAO(databaseConnection);
     }
     
-    // ================================
-    // MAIN PAYROLL PROCESSING METHODS
-    // ================================
+    // CORE VIEW-BASED METHODS - Using Database Views as specified in task document
     
     /**
-     * Processes payroll for all active employees in a pay period
-     * @param payPeriodId The pay period to process
-     * @return PayrollProcessingResult with summary information
+     * Gets employee payslip using monthly_employee_payslip view
+     * This method uses the database view for complex payroll calculations
+     * @param employeeId The employee ID
+     * @param payMonth The pay month in YYYY-MM format
+     * @return PayslipModel with complete payroll breakdown from view
      */
-    public PayrollProcessingResult processPayrollForPeriod(Integer payPeriodId) {
-        PayrollProcessingResult result = new PayrollProcessingResult();
-        result.setPayPeriodId(payPeriodId);
-        result.setProcessedDate(LocalDate.now());
+    public PayslipModel getEmployeePayslip(Integer employeeId, String payMonth) {
+        String sql = """
+            SELECT * FROM monthly_employee_payslip
+            WHERE `Employee ID` = ?
+            AND DATE_FORMAT(`Period Start Date`, '%Y-%m') = ?
+            """;
         
-        try {
-            // Validate pay period exists
-            PayPeriodModel payPeriod = payPeriodDAO.findById(payPeriodId);
-            if (payPeriod == null) {
-                result.setSuccess(false);
-                result.addError("Pay period not found: " + payPeriodId);
-                return result;
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setInt(1, employeeId);
+            stmt.setString(2, payMonth);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return mapViewToPayslip(rs);
+                }
             }
+        } catch (SQLException e) {
+            System.err.println("Error getting employee payslip from view: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Gets monthly payroll summary using monthly_payroll_summary_report view
+     * @param payMonth The pay month in YYYY-MM format
+     * @return List of payroll summary records
+     */
+    public List<PayrollSummaryModel> getMonthlyPayrollSummary(String payMonth) {
+        String sql = """
+            SELECT * FROM monthly_payroll_summary_report
+            WHERE DATE_FORMAT(`Pay Date`, '%Y-%m') = ?
+            ORDER BY `Employee ID`
+            """;
+        
+        List<PayrollSummaryModel> summaryList = new ArrayList<>();
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
             
-            // Get all active employees
-            List<EmployeeModel> activeEmployees = employeeDAO.getActiveEmployees();
-            result.setTotalEmployees(activeEmployees.size());
+            stmt.setString(1, payMonth);
             
-            System.out.println("🔄 Processing payroll for " + activeEmployees.size() + " employees in pay period " + payPeriodId);
-            
-            // Process each employee
-            for (EmployeeModel employee : activeEmployees) {
-                try {
-                    boolean success = processEmployeePayroll(employee.getEmployeeId(), payPeriodId);
-                    if (success) {
-                        result.incrementProcessedEmployees();
-                        System.out.println("✅ Processed payroll for: " + employee.getFullName());
-                    } else {
-                        result.incrementFailedEmployees();
-                        result.addError("Failed to process payroll for employee: " + employee.getEmployeeId());
-                        System.out.println("❌ Failed to process payroll for: " + employee.getFullName());
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    PayrollSummaryModel summary = mapViewToSummary(rs);
+                    if (summary != null) {
+                        summaryList.add(summary);
                     }
-                } catch (Exception e) {
-                    result.incrementFailedEmployees();
-                    result.addError("Error processing employee " + employee.getEmployeeId() + ": " + e.getMessage());
-                    System.err.println("❌ Error processing employee " + employee.getFullName() + ": " + e.getMessage());
                 }
             }
-            
-            // Calculate summary totals
-            calculatePayrollSummary(result, payPeriodId);
-            
-            result.setSuccess(result.getFailedEmployees() == 0);
-            System.out.println("🏁 Payroll processing completed. Success: " + result.getProcessedEmployees() + ", Failed: " + result.getFailedEmployees());
-            
-        } catch (Exception e) {
-            result.setSuccess(false);
-            result.addError("Fatal error during payroll processing: " + e.getMessage());
-            System.err.println("💥 Fatal error during payroll processing: " + e.getMessage());
+        } catch (SQLException e) {
+            System.err.println("Error getting payroll summary from view: " + e.getMessage());
+            e.printStackTrace();
         }
         
-        return result;
+        return summaryList;
     }
     
     /**
-     * Processes payroll for a single employee
-     * @param employeeId Employee ID
-     * @param payPeriodId Pay period ID
-     * @return true if successful, false otherwise
+     * Gets current month payroll data using views
+     * @return List of current month payroll records from view
      */
-    public boolean processEmployeePayroll(Integer employeeId, Integer payPeriodId) {
-        try {
-            // Check if payroll already exists
-            if (payrollDAO.isPayrollGenerated(payPeriodId) && hasEmployeePayroll(employeeId, payPeriodId)) {
-                System.out.println("⚠️ Payroll already exists for employee " + employeeId + " in period " + payPeriodId);
-                return true; // Consider existing payroll as success
+    public List<PayslipModel> getCurrentMonthPayroll() {
+        LocalDate currentDate = getCurrentManilaDate();
+        String currentMonth = currentDate.format(DateTimeFormatter.ofPattern("yyyy-MM"));
+        
+        String sql = """
+            SELECT * FROM monthly_employee_payslip
+            WHERE DATE_FORMAT(`Period Start Date`, '%Y-%m') = ?
+            ORDER BY `Employee ID`
+            """;
+        
+        List<PayslipModel> payslips = new ArrayList<>();
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, currentMonth);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    PayslipModel payslip = mapViewToPayslip(rs);
+                    if (payslip != null) {
+                        payslips.add(payslip);
+                    }
+                }
             }
+        } catch (SQLException e) {
+            System.err.println("Error getting current month payroll: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return payslips;
+    }
+    
+    // RANK-AND-FILE DETECTION - Using position table relationship
+    
+    /**
+     * Checks if an employee is rank-and-file using position table
+     * @param employeeId The employee ID
+     * @return true if employee is rank-and-file
+     */
+    public boolean isEmployeeRankAndFile(Integer employeeId) {
+        String sql = """
+            SELECT COUNT(*) FROM employee e 
+            JOIN position p ON e.positionId = p.positionId 
+            WHERE e.employeeId = ? AND (
+                LOWER(p.department) = 'rank-and-file' 
+                OR LOWER(p.position) LIKE '%rank%file%'
+            )
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
             
-            // Get employee information
-            EmployeeModel employee = employeeDAO.findById(employeeId);
-            if (employee == null) {
-                System.err.println("❌ Employee not found: " + employeeId);
-                return false;
+            stmt.setInt(1, employeeId);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1) > 0;
+                }
             }
-            
-            // Get pay period information
-            PayPeriodModel payPeriod = payPeriodDAO.findById(payPeriodId);
-            if (payPeriod == null) {
-                System.err.println("❌ Pay period not found: " + payPeriodId);
-                return false;
+        } catch (SQLException e) {
+            System.err.println("Error checking rank-and-file status: " + e.getMessage());
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Gets all rank-and-file employees
+     * @return List of rank-and-file employees
+     */
+    public List<EmployeeModel> getRankAndFileEmployees() {
+        return employeeDAO.getRankAndFileEmployees();
+    }
+    
+    /**
+     * Gets all non rank-and-file employees
+     * @return List of non rank-and-file employees
+     */
+    public List<EmployeeModel> getNonRankAndFileEmployees() {
+        return employeeDAO.getNonRankAndFileEmployees();
+    }
+    
+    // PAYROLL PROCESSING METHODS
+    
+    /**
+     * Processes payroll for a specific month using business logic from views
+     * @param payMonth The pay month in YYYY-MM format
+     * @return Number of employees processed
+     */
+    public int processMonthlyPayroll(String payMonth) {
+        System.out.println("🚀 Starting payroll processing for month: " + payMonth);
+        
+        // Get all active employees
+        List<EmployeeModel> employees = employeeDAO.getActiveEmployees();
+        int processedCount = 0;
+        
+        for (EmployeeModel employee : employees) {
+            try {
+                // Check if payroll already exists for this employee and month
+                if (!payrollExistsForMonth(employee.getEmployeeId(), payMonth)) {
+                    
+                    // Process individual employee payroll using views
+                    PayslipModel payslip = processEmployeePayroll(employee.getEmployeeId(), payMonth);
+                    
+                    if (payslip != null) {
+                        processedCount++;
+                        System.out.println("✅ Processed payroll for employee: " + employee.getEmployeeId());
+                    } else {
+                        System.out.println("⚠️ No attendance/leave data for employee: " + employee.getEmployeeId());
+                    }
+                } else {
+                    System.out.println("ℹ️ Payroll already exists for employee: " + employee.getEmployeeId());
+                }
+                
+            } catch (Exception e) {
+                System.err.println("❌ Error processing employee " + employee.getEmployeeId() + ": " + e.getMessage());
             }
-            
-            // Calculate payroll components
-            PayrollCalculation calculation = calculateEmployeePayroll(employee, payPeriod);
-            
-            // Create and save payroll record
-            PayrollModel payroll = createPayrollRecord(employee, payPeriodId, calculation);
-            boolean payrollSaved = payrollDAO.save(payroll);
-            
-            if (!payrollSaved) {
-                System.err.println("❌ Failed to save payroll record for employee: " + employeeId);
-                return false;
-            }
-            
-            // Generate and save payslip
-            PayslipModel payslip = payslipDAO.generatePayslip(employeeId, payPeriodId);
-            if (payslip == null) {
-                System.err.println("⚠️ Warning: Failed to generate payslip for employee: " + employeeId);
-                // Don't fail the entire process for payslip generation issues
-            }
-            
-            return true;
-            
-        } catch (Exception e) {
-            System.err.println("❌ Error processing payroll for employee " + employeeId + ": " + e.getMessage());
+        }
+        
+        System.out.println("🎉 Payroll processing completed. Processed: " + processedCount + " employees");
+        return processedCount;
+    }
+    
+    /**
+     * Processes individual employee payroll by querying the view
+     * @param employeeId The employee ID
+     * @param payMonth The pay month
+     * @return PayslipModel if successful, null if no data
+     */
+    public PayslipModel processEmployeePayroll(Integer employeeId, String payMonth) {
+        // The view handles all the complex business logic, so we just query it
+        return getEmployeePayslip(employeeId, payMonth);
+    }
+    
+    /**
+     * Regenerates payroll for a specific month (deletes existing and recreates)
+     * @param payMonth The pay month in YYYY-MM format
+     * @return Number of employees processed
+     */
+    public int regenerateMonthlyPayroll(String payMonth) {
+        System.out.println("🔄 Regenerating payroll for month: " + payMonth);
+        
+        // First, delete existing payroll records for the month
+        int deletedCount = deletePayrollForMonth(payMonth);
+        System.out.println("🗑️ Deleted " + deletedCount + " existing payroll records");
+        
+        // Then process fresh payroll
+        return processMonthlyPayroll(payMonth);
+    }
+    
+    // VALIDATION METHODS - Manila Timezone Support
+    
+    /**
+     * Validates leave request date (can only be today or future in Manila time)
+     * @param leaveDate The leave date to validate
+     * @return true if valid leave date
+     */
+    public boolean isValidLeaveDate(LocalDate leaveDate) {
+        LocalDate today = getCurrentManilaDate();
+        return !leaveDate.isBefore(today); // Can only request today or future dates
+    }
+    
+    /**
+     * Validates overtime request date (can only be today or future in Manila time)
+     * @param overtimeDate The overtime date to validate
+     * @return true if valid overtime date
+     */
+    public boolean isValidOvertimeDate(LocalDate overtimeDate) {
+        LocalDate today = getCurrentManilaDate();
+        return !overtimeDate.isBefore(today); // Can only request today or future dates
+    }
+    
+    /**
+     * Checks if time is within grace period (8:00-8:10 AM)
+     * @param timeIn The time in
+     * @return true if within grace period
+     */
+    public boolean isWithinGracePeriod(String timeIn) {
+        if (timeIn == null || timeIn.isEmpty()) {
             return false;
         }
+        return timeIn.compareTo("08:00:00") >= 0 && timeIn.compareTo("08:10:00") <= 0;
     }
     
     /**
-     * Calculates all payroll components for an employee
-     * @param employee Employee model
-     * @param payPeriod Pay period model
-     * @return PayrollCalculation with all calculated values
+     * Checks if attendance time is late (after 8:10 AM)
+     * @param timeIn The time in
+     * @return true if late
      */
-    public PayrollCalculation calculateEmployeePayroll(EmployeeModel employee, PayPeriodModel payPeriod) {
-        PayrollCalculation calc = new PayrollCalculation();
-        calc.setEmployeeId(employee.getEmployeeId());
-        calc.setPayPeriodId(payPeriod.getPayPeriodId());
-        
-        // Basic salary (semi-monthly)
-        BigDecimal basicSalary = employee.getBasicSalary();
-        BigDecimal semiMonthlyBasic = basicSalary.divide(new BigDecimal("2"), 2, RoundingMode.HALF_UP);
-        calc.setBasicSalary(semiMonthlyBasic);
-        
-        // Calculate attendance-based earnings
-        BigDecimal attendanceEarnings = calculateAttendanceEarnings(employee, payPeriod);
-        calc.setAttendanceEarnings(attendanceEarnings);
-        
-        // Calculate overtime pay
-        BigDecimal overtimePay = calculateOvertimePay(employee, payPeriod);
-        calc.setOvertimePay(overtimePay);
-        
-        // Calculate benefits
-        BigDecimal totalBenefits = calculateBenefits(employee, payPeriod);
-        calc.setTotalBenefits(totalBenefits);
-        
-        // Calculate gross income
-        BigDecimal grossIncome = semiMonthlyBasic
-            .add(attendanceEarnings)
-            .add(overtimePay)
-            .add(totalBenefits);
-        calc.setGrossIncome(grossIncome);
-        
-        // Calculate deductions
-        BigDecimal totalDeductions = calculateDeductions(employee, grossIncome);
-        calc.setTotalDeductions(totalDeductions);
-        
-        // Calculate net salary
-        BigDecimal netSalary = grossIncome.subtract(totalDeductions);
-        calc.setNetSalary(netSalary);
-        
-        return calc;
-    }
-    
-    // ===============================
-    // CALCULATION HELPER METHODS
-    // ===============================
-    
-    /**
-     * Calculates earnings based on attendance records
-     */
-    private BigDecimal calculateAttendanceEarnings(EmployeeModel employee, PayPeriodModel payPeriod) {
-        try {
-            // Get attendance records for the pay period
-            List<AttendanceModel> attendanceRecords = attendanceDAO.getAttendanceHistory(
-                employee.getEmployeeId(), 
-                payPeriod.getStartDate(), 
-                payPeriod.getEndDate()
-            );
-            
-            BigDecimal totalHours = BigDecimal.ZERO;
-            for (AttendanceModel attendance : attendanceRecords) {
-                if (attendance.isComplete()) {
-                    totalHours = totalHours.add(attendance.getHoursWorked());
-                }
-            }
-            
-            // Calculate earnings based on hours worked
-            return totalHours.multiply(employee.getHourlyRate()).setScale(2, RoundingMode.HALF_UP);
-            
-        } catch (Exception e) {
-            System.err.println("Error calculating attendance earnings: " + e.getMessage());
-            return BigDecimal.ZERO;
-        }
-    }
-    
-    /**
-     * Calculates overtime pay from approved overtime requests
-     */
-    private BigDecimal calculateOvertimePay(EmployeeModel employee, PayPeriodModel payPeriod) {
-        try {
-            YearMonth yearMonth = YearMonth.from(payPeriod.getStartDate());
-            return overtimeDAO.getTotalOvertimePay(
-                employee.getEmployeeId(), 
-                yearMonth.getYear(), 
-                yearMonth.getMonthValue(), 
-                new BigDecimal("1.5") // Time and a half
-            );
-        } catch (Exception e) {
-            System.err.println("Error calculating overtime pay: " + e.getMessage());
-            return BigDecimal.ZERO;
-        }
-    }
-    
-    /**
-     * Calculates total benefits for an employee
-     */
-    private BigDecimal calculateBenefits(EmployeeModel employee, PayPeriodModel payPeriod) {
-        try {
-            if (employee.getPositionId() == null) {
-                return BigDecimal.ZERO;
-            }
-            
-            // Get benefits for employee's position
-            List<java.util.Map<String, Object>> positionBenefits = 
-                benefitDAO.getBenefitsForPosition(employee.getPositionId());
-            
-            BigDecimal totalBenefits = BigDecimal.ZERO;
-            for (java.util.Map<String, Object> benefit : positionBenefits) {
-                BigDecimal benefitValue = (BigDecimal) benefit.get("benefitValue");
-                if (benefitValue != null) {
-                    totalBenefits = totalBenefits.add(benefitValue);
-                }
-            }
-            
-            return totalBenefits;
-            
-        } catch (Exception e) {
-            System.err.println("Error calculating benefits: " + e.getMessage());
-            return BigDecimal.ZERO;
-        }
-    }
-    
-    /**
-     * Calculates total deductions (government mandated + others)
-     */
-    private BigDecimal calculateDeductions(EmployeeModel employee, BigDecimal grossIncome) {
-        try {
-            BigDecimal basicSalary = employee.getBasicSalary();
-            
-            // SSS: 4.5% of basic salary (employee share)
-            BigDecimal sss = basicSalary.multiply(new BigDecimal("0.045")).setScale(2, RoundingMode.HALF_UP);
-            
-            // PhilHealth: 2.75% of basic salary (employee share) 
-            BigDecimal philhealth = basicSalary.multiply(new BigDecimal("0.0275")).setScale(2, RoundingMode.HALF_UP);
-            
-            // Pag-IBIG: 2% of basic salary (employee share)
-            BigDecimal pagibig = basicSalary.multiply(new BigDecimal("0.02")).setScale(2, RoundingMode.HALF_UP);
-            
-            // Withholding Tax: Based on tax brackets
-            BigDecimal withholdingTax = calculateWithholdingTax(grossIncome);
-            
-            return sss.add(philhealth).add(pagibig).add(withholdingTax);
-            
-        } catch (Exception e) {
-            System.err.println("Error calculating deductions: " + e.getMessage());
-            return BigDecimal.ZERO;
-        }
-    }
-    
-    /**
-     * Calculates withholding tax based on BIR tax brackets
-     */
-    private BigDecimal calculateWithholdingTax(BigDecimal grossIncome) {
-        BigDecimal monthlyGross = grossIncome;
-        
-        // Tax brackets (monthly basis)
-        if (monthlyGross.compareTo(new BigDecimal("20833")) <= 0) {
-            return BigDecimal.ZERO; // No tax for income ≤ 250,000 annually
-        } else if (monthlyGross.compareTo(new BigDecimal("33333")) <= 0) {
-            // 20% tax rate
-            return monthlyGross.subtract(new BigDecimal("20833"))
-                              .multiply(new BigDecimal("0.20"))
-                              .setScale(2, RoundingMode.HALF_UP);
-        } else {
-            // Higher tax rates (simplified)
-            return monthlyGross.multiply(new BigDecimal("0.25"))
-                              .setScale(2, RoundingMode.HALF_UP);
-        }
-    }
-    
-    // ===============================
-    // UTILITY AND HELPER METHODS
-    // ===============================
-    
-    /**
-     * Creates a PayrollModel from calculation results
-     */
-    private PayrollModel createPayrollRecord(EmployeeModel employee, Integer payPeriodId, PayrollCalculation calc) {
-        PayrollModel payroll = new PayrollModel();
-        payroll.setEmployeeId(employee.getEmployeeId());
-        payroll.setPayPeriodId(payPeriodId);
-        payroll.setBasicSalary(calc.getBasicSalary());
-        payroll.setGrossIncome(calc.getGrossIncome());
-        payroll.setTotalBenefit(calc.getTotalBenefits());
-        payroll.setTotalDeduction(calc.getTotalDeductions());
-        payroll.setNetSalary(calc.getNetSalary());
-        return payroll;
-    }
-    
-    /**
-     * Checks if an employee already has payroll for a period
-     */
-    private boolean hasEmployeePayroll(Integer employeeId, Integer payPeriodId) {
-        try {
-            List<PayrollModel> employeePayrolls = payrollDAO.findByEmployee(employeeId);
-            return employeePayrolls.stream()
-                    .anyMatch(p -> p.getPayPeriodId().equals(payPeriodId));
-        } catch (Exception e) {
+    public boolean isLateArrival(String timeIn) {
+        if (timeIn == null || timeIn.isEmpty()) {
             return false;
         }
+        return timeIn.compareTo("08:10:00") > 0;
     }
     
+    // REPORTING METHODS
+    
     /**
-     * Calculates summary totals for payroll processing result
+     * Gets payroll totals for a specific month
+     * @param payMonth The pay month
+     * @return PayrollTotals object with summary information
      */
-    private void calculatePayrollSummary(PayrollProcessingResult result, Integer payPeriodId) {
-        try {
-            PayrollDAO.PayrollSummary summary = payrollDAO.getPayrollSummary(payPeriodId);
-            result.setTotalGrossIncome(summary.getTotalGrossIncome());
-            result.setTotalNetSalary(summary.getTotalNetSalary());
-            result.setTotalDeductions(summary.getTotalDeductions());
-            result.setTotalBenefits(summary.getTotalBenefits());
-        } catch (Exception e) {
-            System.err.println("Error calculating payroll summary: " + e.getMessage());
+    public PayrollTotals getPayrollTotals(String payMonth) {
+        String sql = """
+            SELECT 
+                COUNT(*) as employeeCount,
+                SUM(`GROSS INCOME`) as totalGrossIncome,
+                SUM(`TOTAL BENEFITS`) as totalBenefits,
+                SUM(`TOTAL DEDUCTIONS`) as totalDeductions,
+                SUM(`NET PAY`) as totalNetPay
+            FROM monthly_payroll_summary_report
+            WHERE DATE_FORMAT(`Pay Date`, '%Y-%m') = ?
+            AND `Employee ID` != 'TOTAL'
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, payMonth);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    PayrollTotals totals = new PayrollTotals();
+                    totals.setEmployeeCount(rs.getInt("employeeCount"));
+                    totals.setTotalGrossIncome(rs.getBigDecimal("totalGrossIncome"));
+                    totals.setTotalBenefits(rs.getBigDecimal("totalBenefits"));
+                    totals.setTotalDeductions(rs.getBigDecimal("totalDeductions"));
+                    totals.setTotalNetPay(rs.getBigDecimal("totalNetPay"));
+                    return totals;
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error getting payroll totals: " + e.getMessage());
         }
+        
+        return new PayrollTotals(); // Return empty totals if error
     }
     
-    // ===============================
-    // PUBLIC QUERY METHODS
-    // ===============================
+    // HELPER METHODS
     
     /**
-     * Gets payroll records for a specific pay period
+     * Maps database view result to PayslipModel (enhanced to work with view)
+     * @param rs ResultSet from monthly_employee_payslip view
+     * @return PayslipModel object
+     * @throws SQLException if error reading ResultSet
      */
-    public List<PayrollModel> getPayrollForPeriod(Integer payPeriodId) {
-        return payrollDAO.findByPayPeriod(payPeriodId);
-    }
-    
-    /**
-     * Gets payroll history for an employee
-     */
-    public List<PayrollModel> getEmployeePayrollHistory(Integer employeeId, int limit) {
-        return payrollDAO.getPayrollHistory(employeeId, limit);
-    }
-    
-    /**
-     * Gets payroll summary for a pay period
-     */
-    public PayrollDAO.PayrollSummary getPayrollSummary(Integer payPeriodId) {
-        return payrollDAO.getPayrollSummary(payPeriodId);
-    }
-    
-    /**
-     * Deletes payroll for a pay period (use with caution)
-     */
-    public int deletePayrollForPeriod(Integer payPeriodId) {
-        return payrollDAO.deletePayrollByPeriod(payPeriodId);
-    }
-    
-    // ===============================
-    // INNER CLASSES
-    // ===============================
-    
-    /**
-     * Holds calculation results for an employee's payroll
-     */
-    public static class PayrollCalculation {
-        private Integer employeeId;
-        private Integer payPeriodId;
-        private BigDecimal basicSalary = BigDecimal.ZERO;
-        private BigDecimal attendanceEarnings = BigDecimal.ZERO;
-        private BigDecimal overtimePay = BigDecimal.ZERO;
-        private BigDecimal totalBenefits = BigDecimal.ZERO;
-        private BigDecimal grossIncome = BigDecimal.ZERO;
-        private BigDecimal totalDeductions = BigDecimal.ZERO;
-        private BigDecimal netSalary = BigDecimal.ZERO;
+    private PayslipModel mapViewToPayslip(ResultSet rs) throws SQLException {
+        PayslipModel payslip = new PayslipModel();
         
-        // Getters and setters
-        public Integer getEmployeeId() { return employeeId; }
-        public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
+        // Map all the view columns to PayslipModel properties
+        payslip.setPayslipNo(rs.getString("Payslip No"));
+        payslip.setEmployeeId(rs.getInt("Employee ID"));
+        payslip.setEmployeeName(rs.getString("Employee Name"));
+        payslip.setPeriodStartDate(rs.getDate("Period Start Date").toLocalDate());
+        payslip.setPeriodEndDate(rs.getDate("Period End Date").toLocalDate());
+        payslip.setPayDate(rs.getDate("Pay Date").toLocalDate());
+        payslip.setEmployeePosition(rs.getString("Employee Position"));
+        payslip.setDepartment(rs.getString("Department"));
+        payslip.setTin(rs.getString("TIN"));
+        payslip.setSssNo(rs.getString("SSS No"));
+        payslip.setPagibigNo(rs.getString("Pagibig No"));
+        payslip.setPhilhealthNo(rs.getString("Philhealth No"));
+        payslip.setMonthlyRate(rs.getBigDecimal("Monthly Rate"));
+        payslip.setDailyRate(rs.getBigDecimal("Daily Rate"));
         
-        public Integer getPayPeriodId() { return payPeriodId; }
-        public void setPayPeriodId(Integer payPeriodId) { this.payPeriodId = payPeriodId; }
+        // Convert BigDecimal to Integer for daysWorked (to match existing model)
+        BigDecimal daysWorkedBD = rs.getBigDecimal("Days Worked");
+        if (daysWorkedBD != null) {
+            payslip.setDaysWorked(daysWorkedBD.intValue());
+        }
         
-        public BigDecimal getBasicSalary() { return basicSalary; }
-        public void setBasicSalary(BigDecimal basicSalary) { this.basicSalary = basicSalary; }
+        payslip.setLeavesTaken(rs.getBigDecimal("Leaves Taken"));
+        payslip.setOvertimeHours(rs.getBigDecimal("Overtime Hours"));
+        payslip.setGrossIncome(rs.getBigDecimal("GROSS INCOME"));
+        payslip.setRiceSubsidy(rs.getBigDecimal("Rice Subsidy"));
+        payslip.setPhoneAllowance(rs.getBigDecimal("Phone Allowance"));
+        payslip.setClothingAllowance(rs.getBigDecimal("Clothing Allowance"));
+        payslip.setTotalBenefits(rs.getBigDecimal("TOTAL BENEFITS"));
+        payslip.setSssDeduction(rs.getBigDecimal("Social Security System"));
+        payslip.setPhilhealthDeduction(rs.getBigDecimal("Philhealth"));
+        payslip.setPagibigDeduction(rs.getBigDecimal("Pag-Ibig"));
+        payslip.setWithholdingTax(rs.getBigDecimal("Withholding Tax"));
+        payslip.setTotalDeductions(rs.getBigDecimal("TOTAL DEDUCTIONS"));
+        payslip.setNetPay(rs.getBigDecimal("NET PAY"));
         
-        public BigDecimal getAttendanceEarnings() { return attendanceEarnings; }
-        public void setAttendanceEarnings(BigDecimal attendanceEarnings) { this.attendanceEarnings = attendanceEarnings; }
-        
-        public BigDecimal getOvertimePay() { return overtimePay; }
-        public void setOvertimePay(BigDecimal overtimePay) { this.overtimePay = overtimePay; }
-        
-        public BigDecimal getTotalBenefits() { return totalBenefits; }
-        public void setTotalBenefits(BigDecimal totalBenefits) { this.totalBenefits = totalBenefits; }
-        
-        public BigDecimal getGrossIncome() { return grossIncome; }
-        public void setGrossIncome(BigDecimal grossIncome) { this.grossIncome = grossIncome; }
-        
-        public BigDecimal getTotalDeductions() { return totalDeductions; }
-        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
-        
-        public BigDecimal getNetSalary() { return netSalary; }
-        public void setNetSalary(BigDecimal netSalary) { this.netSalary = netSalary; }
+        return payslip;
     }
     
     /**
-     * Holds results from payroll processing operation
+     * Maps database view result to PayrollSummaryModel
+     * @param rs ResultSet from monthly_payroll_summary_report view
+     * @return PayrollSummaryModel object
+     * @throws SQLException if error reading ResultSet
      */
-    public static class PayrollProcessingResult {
-        private Integer payPeriodId;
-        private boolean success = false;
-        private LocalDate processedDate;
-        private int totalEmployees = 0;
-        private int processedEmployees = 0;
-        private int failedEmployees = 0;
+    private PayrollSummaryModel mapViewToSummary(ResultSet rs) throws SQLException {
+        PayrollSummaryModel summary = new PayrollSummaryModel();
+        
+        summary.setPayDate(rs.getDate("Pay Date").toLocalDate());
+        summary.setEmployeeId(rs.getString("Employee ID"));
+        summary.setEmployeeName(rs.getString("Employee Name"));
+        summary.setPosition(rs.getString("Position"));
+        summary.setDepartment(rs.getString("Department"));
+        summary.setBaseSalary(rs.getBigDecimal("Base Salary"));
+        summary.setLeaves(rs.getBigDecimal("Leaves"));
+        summary.setOvertime(rs.getBigDecimal("Overtime"));
+        summary.setGrossIncome(rs.getBigDecimal("GROSS INCOME"));
+        summary.setRiceSubsidy(rs.getBigDecimal("Rice Subsidy"));
+        summary.setPhoneAllowance(rs.getBigDecimal("Phone Allowance"));
+        summary.setClothingAllowance(rs.getBigDecimal("Clothing Allowance"));
+        summary.setTotalBenefits(rs.getBigDecimal("TOTAL BENEFITS"));
+        summary.setSocialSecurityNo(rs.getString("Social Security No"));
+        summary.setSocialSecurityContribution(rs.getBigDecimal("Social Security Contribution"));
+        summary.setPhilhealthNo(rs.getString("Philhealth No"));
+        summary.setPhilhealthContribution(rs.getBigDecimal("Philhealth Contribution"));
+        summary.setPagIbigNo(rs.getString("Pag-Ibig No"));
+        summary.setPagIbigContribution(rs.getBigDecimal("Pag-Ibig Contribution"));
+        summary.setTin(rs.getString("TIN"));
+        summary.setWithholdingTax(rs.getBigDecimal("Withholding Tax"));
+        summary.setTotalDeductions(rs.getBigDecimal("TOTAL DEDUCTIONS"));
+        summary.setNetPay(rs.getBigDecimal("NET PAY"));
+        
+        return summary;
+    }
+    
+    /**
+     * Gets current Manila date
+     * @return Current date in Manila timezone
+     */
+    private LocalDate getCurrentManilaDate() {
+        return LocalDate.now(MANILA_TIMEZONE);
+    }
+    
+    /**
+     * Gets current Manila time
+     * @return Current datetime in Manila timezone
+     */
+    private LocalDateTime getCurrentManilaTime() {
+        return LocalDateTime.now(MANILA_TIMEZONE);
+    }
+    
+    /**
+     * Checks if payroll exists for a specific month
+     * @param employeeId The employee ID
+     * @param payMonth The pay month
+     * @return true if payroll exists
+     */
+    private boolean payrollExistsForMonth(Integer employeeId, String payMonth) {
+        String sql = """
+            SELECT COUNT(*) FROM monthly_employee_payslip
+            WHERE `Employee ID` = ?
+            AND DATE_FORMAT(`Period Start Date`, '%Y-%m') = ?
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setInt(1, employeeId);
+            stmt.setString(2, payMonth);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1) > 0;
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error checking payroll existence: " + e.getMessage());
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Deletes payroll records for a specific month
+     * @param payMonth The pay month
+     * @return Number of records deleted
+     */
+    private int deletePayrollForMonth(String payMonth) {
+        // This would need to be implemented based on your payroll table structure
+        // For now, return 0 as the view is read-only
+        return 0;
+    }
+    
+    // INNER CLASS - PayrollTotals for summary information
+    
+    /**
+     * Inner class to hold payroll totals information
+     */
+    public static class PayrollTotals {
+        private int employeeCount;
         private BigDecimal totalGrossIncome = BigDecimal.ZERO;
-        private BigDecimal totalNetSalary = BigDecimal.ZERO;
-        private BigDecimal totalDeductions = BigDecimal.ZERO;
         private BigDecimal totalBenefits = BigDecimal.ZERO;
-        private List<String> errors = new ArrayList<>();
+        private BigDecimal totalDeductions = BigDecimal.ZERO;
+        private BigDecimal totalNetPay = BigDecimal.ZERO;
         
         // Getters and setters
-        public Integer getPayPeriodId() { return payPeriodId; }
-        public void setPayPeriodId(Integer payPeriodId) { this.payPeriodId = payPeriodId; }
-        
-        public boolean isSuccess() { return success; }
-        public void setSuccess(boolean success) { this.success = success; }
-        
-        public LocalDate getProcessedDate() { return processedDate; }
-        public void setProcessedDate(LocalDate processedDate) { this.processedDate = processedDate; }
-        
-        public int getTotalEmployees() { return totalEmployees; }
-        public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
-        
-        public int getProcessedEmployees() { return processedEmployees; }
-        public void incrementProcessedEmployees() { this.processedEmployees++; }
-        
-        public int getFailedEmployees() { return failedEmployees; }
-        public void incrementFailedEmployees() { this.failedEmployees++; }
+        public int getEmployeeCount() { return employeeCount; }
+        public void setEmployeeCount(int employeeCount) { this.employeeCount = employeeCount; }
         
         public BigDecimal getTotalGrossIncome() { return totalGrossIncome; }
-        public void setTotalGrossIncome(BigDecimal totalGrossIncome) { this.totalGrossIncome = totalGrossIncome; }
-        
-        public BigDecimal getTotalNetSalary() { return totalNetSalary; }
-        public void setTotalNetSalary(BigDecimal totalNetSalary) { this.totalNetSalary = totalNetSalary; }
-        
-        public BigDecimal getTotalDeductions() { return totalDeductions; }
-        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
+        public void setTotalGrossIncome(BigDecimal totalGrossIncome) { 
+            this.totalGrossIncome = totalGrossIncome != null ? totalGrossIncome : BigDecimal.ZERO; 
+        }
         
         public BigDecimal getTotalBenefits() { return totalBenefits; }
-        public void setTotalBenefits(BigDecimal totalBenefits) { this.totalBenefits = totalBenefits; }
+        public void setTotalBenefits(BigDecimal totalBenefits) { 
+            this.totalBenefits = totalBenefits != null ? totalBenefits : BigDecimal.ZERO; 
+        }
         
-        public List<String> getErrors() { return errors; }
-        public void addError(String error) { this.errors.add(error); }
+        public BigDecimal getTotalDeductions() { return totalDeductions; }
+        public void setTotalDeductions(BigDecimal totalDeductions) { 
+            this.totalDeductions = totalDeductions != null ? totalDeductions : BigDecimal.ZERO; 
+        }
+        
+        public BigDecimal getTotalNetPay() { return totalNetPay; }
+        public void setTotalNetPay(BigDecimal totalNetPay) { 
+            this.totalNetPay = totalNetPay != null ? totalNetPay : BigDecimal.ZERO; 
+        }
         
         @Override
         public String toString() {
-            return String.format("PayrollProcessingResult{payPeriodId=%d, success=%s, processed=%d/%d, totalNet=%s}",
-                    payPeriodId, success, processedEmployees, totalEmployees, totalNetSalary);
+            return String.format("PayrollTotals{employees=%d, grossIncome=%s, benefits=%s, deductions=%s, netPay=%s}",
+                    employeeCount, totalGrossIncome, totalBenefits, totalDeductions, totalNetPay);
         }
     }
-} 
+}
