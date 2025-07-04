@@ -3,6 +3,7 @@ package DAOs;
 import Models.LeaveRequestModel;
 import Models.LeaveRequestModel.ApprovalStatus;
 import java.sql.*;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -36,12 +37,12 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
     protected LeaveRequestModel mapResultSetToEntity(ResultSet rs) throws SQLException {
         LeaveRequestModel leave = new LeaveRequestModel();
         
-        // FIXED: Use correct database column names
-        leave.setLeaveRequestId(rs.getInt("leaveRequestId"));  // Was "requestId" 
+        // Use correct database column names
+        leave.setLeaveRequestId(rs.getInt("leaveRequestId"));
         leave.setEmployeeId(rs.getInt("employeeId"));
         leave.setLeaveTypeId(rs.getInt("leaveTypeId"));
         
-        // Handle date fields
+        // Handle date fields - FIXED: Proper conversion
         Date leaveStart = rs.getDate("leaveStart");
         if (leaveStart != null) {
             leave.setLeaveStart(leaveStart.toLocalDate());
@@ -52,17 +53,17 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
             leave.setLeaveEnd(leaveEnd.toLocalDate());
         }
         
-        // FIXED: Use correct database column names
-        leave.setLeaveReason(rs.getString("leaveReason"));        // Was "reason"
+        // Handle other fields
+        leave.setLeaveReason(rs.getString("leaveReason"));
         
-        // FIXED: Handle enum for approval status
-        String statusStr = rs.getString("approvalStatus");       // Was "status"
+        // Handle enum for approval status
+        String statusStr = rs.getString("approvalStatus");
         if (statusStr != null) {
             leave.setApprovalStatus(ApprovalStatus.fromString(statusStr));
         }
         
-        // Handle timestamp fields
-        Timestamp dateCreated = rs.getTimestamp("dateCreated");  // Was "dateRequested"
+        // Handle timestamp fields - FIXED: Proper conversion
+        Timestamp dateCreated = rs.getTimestamp("dateCreated");
         if (dateCreated != null) {
             leave.setDateCreated(dateCreated.toLocalDateTime());
         }
@@ -92,7 +93,7 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
      */
     @Override
     protected String getPrimaryKeyColumn() {
-        return "leaveRequestId";  // FIXED: Was "requestId"
+        return "leaveRequestId";
     }
     
     /**
@@ -104,13 +105,13 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
      */
     @Override
     protected void setInsertParameters(PreparedStatement stmt, LeaveRequestModel leave) throws SQLException {
-        // Note: leaveRequestId is auto-increment, so we don't include it in INSERT
-        // dateCreated has DEFAULT CURRENT_TIMESTAMP, so we can let database handle it
         int paramIndex = 1;
         
         // Set required fields in correct order
         stmt.setInt(paramIndex++, leave.getEmployeeId());
         stmt.setInt(paramIndex++, leave.getLeaveTypeId());
+        
+        // FIXED: Proper date conversion
         stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveStart()));
         stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveEnd()));
         
@@ -121,14 +122,14 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
             stmt.setNull(paramIndex++, Types.VARCHAR);
         }
         
-        // FIXED: Handle enum properly
+        // Handle enum properly
         if (leave.getApprovalStatus() != null) {
             stmt.setString(paramIndex++, leave.getApprovalStatus().getValue());
         } else {
-            stmt.setString(paramIndex++, ApprovalStatus.PENDING.getValue()); // Default value
+            stmt.setString(paramIndex++, ApprovalStatus.PENDING.getValue());
         }
         
-        // Handle optional timestamp fields
+        // Handle optional timestamp fields - FIXED: Proper null checking
         if (leave.getDateApproved() != null) {
             stmt.setTimestamp(paramIndex++, Timestamp.valueOf(leave.getDateApproved()));
         } else {
@@ -156,6 +157,8 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
         // Set all the same fields as INSERT (excluding auto-increment ID)
         stmt.setInt(paramIndex++, leave.getEmployeeId());
         stmt.setInt(paramIndex++, leave.getLeaveTypeId());
+        
+        // FIXED: Proper date conversion
         stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveStart()));
         stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveEnd()));
         
@@ -171,6 +174,7 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
             stmt.setString(paramIndex++, ApprovalStatus.PENDING.getValue());
         }
         
+        // FIXED: Proper null checking for timestamp
         if (leave.getDateApproved() != null) {
             stmt.setTimestamp(paramIndex++, Timestamp.valueOf(leave.getDateApproved()));
         } else {
@@ -247,7 +251,7 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
      * @param employeeId The employee ID
      * @return List of leave requests for the employee
      */
-    public List<LeaveRequestModel> findByEmployeeId(Integer employeeId) {
+    public List<LeaveRequestModel> findByEmployee(Integer employeeId) {
         String sql = "SELECT * FROM leaverequest WHERE employeeId = ? ORDER BY dateCreated DESC";
         return executeQuery(sql, employeeId);
     }

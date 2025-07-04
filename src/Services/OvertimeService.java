@@ -1,4 +1,3 @@
-
 package Services;
 
 import DAOs.*;
@@ -10,12 +9,14 @@ import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.Duration;
+import java.sql.Date;
 import java.util.List;
 import java.util.ArrayList;
 
 /**
  * OvertimeService - Business logic for overtime management
  * Handles overtime requests, approvals, calculations, and overtime-related reporting
+ * Enhanced with rank-and-file business logic (simplified version)
  * @author User
  */
 public class OvertimeService {
@@ -41,7 +42,7 @@ public class OvertimeService {
         this.databaseConnection = new DatabaseConnection();
         this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
         this.employeeDAO = new EmployeeDAO(databaseConnection);
-        this.attendanceDAO = new AttendanceDAO(databaseConnection);
+        this.attendanceDAO = new AttendanceDAO();
     }
 
     /**
@@ -51,7 +52,44 @@ public class OvertimeService {
         this.databaseConnection = databaseConnection;
         this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
         this.employeeDAO = new EmployeeDAO(databaseConnection);
-        this.attendanceDAO = new AttendanceDAO(databaseConnection);
+        this.attendanceDAO = new AttendanceDAO();
+    }
+
+    // ================================
+    // RANK-AND-FILE BUSINESS LOGIC (Simplified)
+    // ================================
+
+    /**
+     * Check if employee is rank-and-file and eligible for overtime
+     * Simplified version - you can enhance this later when you have PositionDAO
+     * @param employeeId Employee ID to check
+     * @return true if employee is eligible for overtime
+     */
+    public boolean isEligibleForOvertime(Integer employeeId) {
+        // Simplified implementation - assume all employees are eligible for now
+        // TODO: Add proper rank-and-file checking when PositionDAO is implemented
+        // Business logic: Only rank-and-file employees should be eligible for overtime
+        return true;
+    }
+
+    /**
+     * Get overtime eligibility message
+     * @param employeeId Employee ID
+     * @return Eligibility message
+     */
+    public String getOvertimeEligibilityMessage(Integer employeeId) {
+        try {
+            EmployeeModel employee = employeeDAO.findById(employeeId);
+            if (employee == null) {
+                return "Employee not found";
+            }
+
+            // Simplified - assume all employees are eligible
+            return "✅ " + employee.getFullName() + " is eligible for overtime";
+
+        } catch (Exception e) {
+            return "Error checking eligibility: " + e.getMessage();
+        }
     }
 
     // ================================
@@ -71,6 +109,13 @@ public class OvertimeService {
         OvertimeRequestResult result = new OvertimeRequestResult();
 
         try {
+            // Check if employee is eligible for overtime
+            if (!isEligibleForOvertime(employeeId)) {
+                result.setSuccess(false);
+                result.setMessage(getOvertimeEligibilityMessage(employeeId));
+                return result;
+            }
+
             // Validate employee exists
             EmployeeModel employee = employeeDAO.findById(employeeId);
             if (employee == null) {
@@ -359,7 +404,8 @@ public class OvertimeService {
 
         // Check if employee has regular attendance for the day
         LocalDate overtimeDate = overtimeStart.toLocalDate();
-        AttendanceModel attendance = attendanceDAO.findByEmployeeAndDate(employeeId, overtimeDate);
+        // FIXED: Use correct method name and parameter type
+        AttendanceModel attendance = attendanceDAO.getAttendanceByEmployeeAndDate(employeeId, Date.valueOf(overtimeDate));
         if (attendance == null || !attendance.isComplete()) {
             result.setValid(false);
             result.setErrorMessage("Employee must have complete regular attendance before requesting overtime");
