@@ -251,7 +251,7 @@ public class OvertimeService {
             }
 
             // Check if already processed
-            if (overtimeRequest.isProcessed()) {
+           if (overtimeRequest.getApprovalStatus() != ApprovalStatus.PENDING) {
                 result.setSuccess(false);
                 result.setMessage("Overtime request has already been " + overtimeRequest.getApprovalStatus().getValue().toLowerCase());
                 return result;

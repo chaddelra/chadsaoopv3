@@ -1,9 +1,4 @@
 package Models;
-import Models.EmployeeModel.EmployeeStatus;
-import Services.*;
-import Services.ReportService.*;
-import DAOs.*;
-import DAOs.DatabaseConnection;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -11,6 +6,14 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
 import java.util.ArrayList;
+
+import Services.PayrollService;
+import Services.ReportService;
+import Services.AttendanceService;
+import DAOs.EmployeeDAO;
+import DAOs.PayrollDAO;
+import DAOs.PayPeriodDAO;
+import DAOs.DatabaseConnection;
 
 public class AccountingModel extends EmployeeModel {
     
@@ -34,25 +37,18 @@ public class AccountingModel extends EmployeeModel {
      * Constructor for Accounting role
      */
     public AccountingModel(int employeeId, String firstName, String lastName, String email, String userRole) {
-        // Call the parent EmployeeModel constructor
-        super();
+        // Call the parent EmployeeModel constructor with proper parameters
+        super(employeeId, firstName, lastName, email, userRole);
         
-        // Set inherited fields from EmployeeModel
-        this.setEmployeeId(employeeId);
-        this.setFirstName(firstName);
-        this.setLastName(lastName);
-        this.setEmail(email);
-        this.setUserRole(userRole);
-        
-        // Initialize services
+        // Initialize services with database connection
         DatabaseConnection dbConnection = new DatabaseConnection();
-        this.payrollService = new PayrollService(dbConnection);
-        this.reportService = new ReportService(dbConnection);
+        this.payrollService = new PayrollService();
+        this.reportService = new ReportService();
         this.attendanceService = new AttendanceService();
         
-        // Initialize DAOs (only using confirmed existing ones)
-        this.employeeDAO = new EmployeeDAO(dbConnection);
-        this.payrollDAO = new PayrollDAO(dbConnection);
+        // Initialize DAOs
+        this.employeeDAO = new EmployeeDAO();
+        this.payrollDAO = new PayrollDAO();
         this.payPeriodDAO = new PayPeriodDAO();
         
         System.out.println("Accounting user initialized: " + getFullName());
@@ -62,17 +58,20 @@ public class AccountingModel extends EmployeeModel {
      * Constructor from existing EmployeeModel
      */
     public AccountingModel(EmployeeModel employee) {
-        super();
+        // Call parent constructor with employee data
+        super(employee.getEmployeeId(), employee.getFirstName(), employee.getLastName(), 
+              employee.getEmail(), employee.getUserRole());
+        
+        // Copy additional fields from the source employee
         this.copyFromEmployeeModel(employee);
         
         // Initialize Accounting-specific components
-        DatabaseConnection dbConnection = new DatabaseConnection();
-        this.payrollService = new PayrollService(dbConnection);
-        this.reportService = new ReportService(dbConnection);
-        this.attendanceService = new AttendanceService(dbConnection);
+        this.payrollService = new PayrollService();
+        this.reportService = new ReportService();
+        this.attendanceService = new AttendanceService();
         
-        this.employeeDAO = new EmployeeDAO(dbConnection);
-        this.payrollDAO = new PayrollDAO(dbConnection);
+        this.employeeDAO = new EmployeeDAO();
+        this.payrollDAO = new PayrollDAO();
         this.payPeriodDAO = new PayPeriodDAO();
         
         System.out.println("Accounting user initialized from EmployeeModel: " + getFullName());
@@ -82,16 +81,11 @@ public class AccountingModel extends EmployeeModel {
      * Helper method to copy data from another EmployeeModel
      */
     private void copyFromEmployeeModel(EmployeeModel source) {
-        this.setEmployeeId(source.getEmployeeId());
-        this.setFirstName(source.getFirstName());
-        this.setLastName(source.getLastName());
-        this.setEmail(source.getEmail());
-        this.setUserRole(source.getUserRole());
-        this.setStatus(source.getStatus());
-        this.setBasicSalary(source.getBasicSalary());
-        this.setBirthDate(source.getBirthDate());
-        this.setPositionId(source.getPositionId());
-        // Add more fields here as your EmployeeModel expands
+        if (source.getStatus() != null) this.setStatus(source.getStatus());
+        if (source.getBasicSalary() != null) this.setBasicSalary(source.getBasicSalary());
+        if (source.getBirthDate() != null) this.setBirthDate(source.getBirthDate());
+        if (source.getPositionId() != null) this.setPositionId(source.getPositionId());
+        // Add more fields as needed based on your EmployeeModel
     }
 
     // ================================
@@ -224,15 +218,15 @@ public class AccountingModel extends EmployeeModel {
     /**
      * Generates comprehensive financial report using ReportService
      */
-    public ReportService.PayrollReport generateFinancialReport(Integer payPeriodId) {
+    public ReportResult generateFinancialReport(Integer payPeriodId) {
         if (!hasPermission("GENERATE_FINANCIAL_REPORTS")) {
-            ReportService.PayrollReport report = new ReportService.PayrollReport();
+            ReportResult report = new ReportResult();
             report.setSuccess(false);
             report.setErrorMessage("Insufficient permissions to generate financial reports");
             return report;
         }
         
-        ReportService.PayrollReport report = reportService.generatePayrollReport(payPeriodId);
+        ReportResult report = reportService.generatePayrollReport(payPeriodId);
         
         if (report.isSuccess()) {
             logAccountingActivity("FINANCIAL_REPORT_GENERATED", 
@@ -245,15 +239,15 @@ public class AccountingModel extends EmployeeModel {
     /**
      * Generates tax compliance report using ReportService
      */
-    public ReportService.ComplianceReport generateTaxComplianceReport(YearMonth yearMonth) {
+    public ReportResult generateTaxComplianceReport(YearMonth yearMonth) {
         if (!hasPermission("GENERATE_FINANCIAL_REPORTS")) {
-            ReportService.ComplianceReport report = new ReportService.ComplianceReport();
+            ReportResult report = new ReportResult();
             report.setSuccess(false);
             report.setErrorMessage("Insufficient permissions to generate tax reports");
             return report;
         }
         
-        ReportService.ComplianceReport report = reportService.generateComplianceReport(yearMonth);
+        ReportResult report = reportService.generateComplianceReport(yearMonth);
         
         if (report.isSuccess()) {
             logAccountingActivity("TAX_REPORT_GENERATED", 
@@ -266,9 +260,9 @@ public class AccountingModel extends EmployeeModel {
     /**
      * Generates salary comparison report using ReportService
      */
-    public ReportService.SalaryComparisonReport generateSalaryComparisonReport(LocalDate startDate, LocalDate endDate) {
+    public ReportResult generateSalaryComparisonReport(LocalDate startDate, LocalDate endDate) {
         if (!hasPermission("GENERATE_FINANCIAL_REPORTS")) {
-            ReportService.SalaryComparisonReport report = new ReportService.SalaryComparisonReport();
+            ReportResult report = new ReportResult();
             report.setSuccess(false);
             report.setErrorMessage("Insufficient permissions to generate salary reports");
             return report;
@@ -375,7 +369,6 @@ public class AccountingModel extends EmployeeModel {
 
     /**
      * Checks if Accounting user has specific permission
-     * FIXED: Now properly checks if the user has the "Accounting" role
      */
     private boolean hasPermission(String permission) {
         // First check if the user has the Accounting role
@@ -425,7 +418,7 @@ public class AccountingModel extends EmployeeModel {
     }
 
     // ================================
-    // INNER CLASS - RESULT OBJECT
+    // INNER CLASSES - RESULT OBJECTS
     // ================================
 
     /**
@@ -482,5 +475,26 @@ public class AccountingModel extends EmployeeModel {
                    '}';
         }
     }
-}
 
+    /**
+     * Generic result class for reports
+     */
+    public static class ReportResult {
+        private boolean success = false;
+        private String errorMessage = "";
+        private String reportContent = "";
+        private String filePath = "";
+
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+        
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+        
+        public String getReportContent() { return reportContent; }
+        public void setReportContent(String reportContent) { this.reportContent = reportContent; }
+        
+        public String getFilePath() { return filePath; }
+        public void setFilePath(String filePath) { this.filePath = filePath; }
+    }
+}
