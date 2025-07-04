@@ -84,9 +84,10 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
             employee.setUpdatedAt(updatedAt.toLocalDateTime());
         }
         
+        // FIXED: Handle lastLogin as Timestamp (not LocalDateTime)
         Timestamp lastLogin = rs.getTimestamp("lastLogin");
         if (lastLogin != null) {
-            employee.setLastLogin(lastLogin.toLocalDateTime());
+            employee.setLastLogin(lastLogin);
         }
         
         // Handle foreign key relationships (could be null)
@@ -148,7 +149,7 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
         
         // Handle last login (could be null for new employees)
         if (employee.getLastLogin() != null) {
-            stmt.setTimestamp(paramIndex++, Timestamp.valueOf(employee.getLastLogin()));
+            stmt.setTimestamp(paramIndex++, employee.getLastLogin());
         } else {
             stmt.setNull(paramIndex++, Types.TIMESTAMP);
         }
@@ -187,7 +188,7 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
         stmt.setString(paramIndex++, employee.getStatus().getValue());
         
         if (employee.getLastLogin() != null) {
-            stmt.setTimestamp(paramIndex++, Timestamp.valueOf(employee.getLastLogin()));
+            stmt.setTimestamp(paramIndex++, employee.getLastLogin());
         } else {
             stmt.setNull(paramIndex++, Types.TIMESTAMP);
         }
@@ -265,7 +266,7 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
             JOIN position p ON e.positionId = p.positionId 
             WHERE e.employeeId = ? 
             AND (LOWER(p.department) = 'rank-and-file' 
-                 OR LOWER(p.position) LIKE '%rank-and-file%')
+                 OR LOWER(p.position) LIKE '%rank%file%')
             """;
         
         try (Connection conn = databaseConnection.createConnection();
@@ -295,7 +296,7 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
             FROM employee e 
             JOIN position p ON e.positionId = p.positionId 
             WHERE (LOWER(p.department) = 'rank-and-file' 
-                   OR LOWER(p.position) LIKE '%rank-and-file%')
+                   OR LOWER(p.position) LIKE '%rank%file%')
             AND e.status != 'Terminated'
             ORDER BY e.lastName, e.firstName
             """;
@@ -313,7 +314,7 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
             FROM employee e 
             JOIN position p ON e.positionId = p.positionId 
             WHERE NOT (LOWER(p.department) = 'rank-and-file' 
-                      OR LOWER(p.position) LIKE '%rank-and-file%')
+                      OR LOWER(p.position) LIKE '%rank%file%')
             AND e.status != 'Terminated'
             ORDER BY e.lastName, e.firstName
             """;
@@ -359,12 +360,11 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
             
             if (rs.next()) {
                 EmployeeModel employee = mapResultSetToEntity(rs);
-                PositionModel position = new PositionModel(
-                    employee.getPositionId(),
-                    rs.getString("position"),
-                    rs.getString("positionDescription"),
-                    rs.getString("department")
-                );
+                PositionModel position = new PositionModel();
+                position.setPositionId(employee.getPositionId());
+                position.setPosition(rs.getString("position"));
+                position.setPositionDescription(rs.getString("positionDescription"));
+                position.setDepartment(rs.getString("department"));
                 
                 return new EmployeeWithPosition(employee, position);
             }
@@ -459,10 +459,10 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
             SELECT 
                 COUNT(*) as total_employees,
                 SUM(CASE WHEN (LOWER(p.department) = 'rank-and-file' 
-                              OR LOWER(p.position) LIKE '%rank-and-file%') 
+                              OR LOWER(p.position) LIKE '%rank%file%') 
                          THEN 1 ELSE 0 END) as rank_and_file_count,
                 SUM(CASE WHEN NOT (LOWER(p.department) = 'rank-and-file' 
-                                  OR LOWER(p.position) LIKE '%rank-and-file%') 
+                                  OR LOWER(p.position) LIKE '%rank%file%') 
                          THEN 1 ELSE 0 END) as non_rank_and_file_count,
                 COUNT(CASE WHEN e.status = 'Terminated' THEN 1 END) as terminated_count
             FROM employee e 
@@ -849,7 +849,8 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
                 return true;
             }
             
-            if (positionTitle != null && positionTitle.toLowerCase().contains("rank-and-file")) {
+            if (positionTitle != null && positionTitle.toLowerCase().contains("rank") && 
+                positionTitle.toLowerCase().contains("file")) {
                 return true;
             }
             
@@ -950,3 +951,4 @@ public class EmployeeDAO extends BaseDAO<EmployeeModel, Integer> {
         }
     }
 }
+        

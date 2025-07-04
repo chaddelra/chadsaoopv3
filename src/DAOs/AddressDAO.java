@@ -7,11 +7,19 @@ import java.util.*;
 /**
  * AddressDAO - Data Access Object for AddressModel
  * Enhanced with Manila-specific address operations and Philippine location support
+ * FIXED for enhanced AddressModel compatibility
  * @author User
  */
 public class AddressDAO {
     
+    private final DatabaseConnection databaseConnection;
+    
     public AddressDAO() {
+        this.databaseConnection = new DatabaseConnection();
+    }
+    
+    public AddressDAO(DatabaseConnection databaseConnection) {
+        this.databaseConnection = databaseConnection;
     }
     
     // BASIC CRUD OPERATIONS
@@ -22,9 +30,17 @@ public class AddressDAO {
      * @return 
      */
     public boolean save(AddressModel address) {
+        if (address == null || !address.isValid()) {
+            System.err.println("Cannot save invalid address");
+            return false;
+        }
+        
+        // Normalize address before saving
+        address.normalizeAddress();
+        
         String sql = "INSERT INTO address (street, barangay, city, province, zipCode) VALUES (?, ?, ?, ?, ?)";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             
             pstmt.setString(1, address.getStreet());
@@ -42,6 +58,7 @@ public class AddressDAO {
                         address.setAddressId(generatedKeys.getInt(1));
                     }
                 }
+                System.out.println("✅ Address saved: " + address.getShortAddress());
                 return true;
             }
         } catch (SQLException e) {
@@ -58,7 +75,7 @@ public class AddressDAO {
     public AddressModel findById(int addressId) {
         String sql = "SELECT * FROM address WHERE addressId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, addressId);
@@ -81,7 +98,7 @@ public class AddressDAO {
         List<AddressModel> addresses = new ArrayList<>();
         String sql = "SELECT * FROM address ORDER BY city, province";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
@@ -100,14 +117,22 @@ public class AddressDAO {
      * @return 
      */
     public boolean update(AddressModel address) {
-        if (address.getAddressId() == null || address.getAddressId() <= 0) {
+        if (address == null || address.getAddressId() == null || address.getAddressId() <= 0) {
             System.err.println("Cannot update address: Invalid address ID");
             return false;
         }
         
+        if (!address.isValid()) {
+            System.err.println("Cannot update address: Invalid address data");
+            return false;
+        }
+        
+        // Normalize address before updating
+        address.normalizeAddress();
+        
         String sql = "UPDATE address SET street = ?, barangay = ?, city = ?, province = ?, zipCode = ? WHERE addressId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setString(1, address.getStreet());
@@ -117,7 +142,11 @@ public class AddressDAO {
             pstmt.setString(5, address.getZipCode());
             pstmt.setInt(6, address.getAddressId());
             
-            return pstmt.executeUpdate() > 0;
+            boolean success = pstmt.executeUpdate() > 0;
+            if (success) {
+                System.out.println("✅ Address updated: " + address.getShortAddress());
+            }
+            return success;
         } catch (SQLException e) {
             System.err.println("Error updating address: " + e.getMessage());
         }
@@ -130,6 +159,9 @@ public class AddressDAO {
      * @return 
      */
     public boolean delete(AddressModel address) {
+        if (address == null || address.getAddressId() == null) {
+            return false;
+        }
         return deleteById(address.getAddressId());
     }
     
@@ -141,7 +173,7 @@ public class AddressDAO {
     public boolean deleteById(int addressId) {
         String sql = "DELETE FROM address WHERE addressId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, addressId);
@@ -172,13 +204,14 @@ public class AddressDAO {
             ORDER BY city, street
             """;
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
             while (rs.next()) {
                 addresses.add(mapResultSetToAddress(rs));
             }
+            System.out.println("✅ Found " + addresses.size() + " Manila area addresses");
         } catch (SQLException e) {
             System.err.println("Error finding Manila area addresses: " + e.getMessage());
         }
@@ -186,22 +219,23 @@ public class AddressDAO {
     }
     
     /**
-     * Find all addresses in Taguig (user's location)
-     * @return List of Taguig addresses
+     * Find all addresses in Naaldwijk area (user's location from preferences)
+     * @return List of Naaldwijk addresses
      */
-    public List<AddressModel> findTaguigAddresses() {
+    public List<AddressModel> findNaaldwijkAddresses() {
         List<AddressModel> addresses = new ArrayList<>();
-        String sql = "SELECT * FROM address WHERE LOWER(city) LIKE '%taguig%' ORDER BY street";
+        String sql = "SELECT * FROM address WHERE LOWER(city) LIKE '%naaldwijk%' ORDER BY street";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
             while (rs.next()) {
                 addresses.add(mapResultSetToAddress(rs));
             }
+            System.out.println("✅ Found " + addresses.size() + " Naaldwijk addresses");
         } catch (SQLException e) {
-            System.err.println("Error finding Taguig addresses: " + e.getMessage());
+            System.err.println("Error finding Naaldwijk addresses: " + e.getMessage());
         }
         return addresses;
     }
@@ -224,7 +258,7 @@ public class AddressDAO {
             ORDER BY province, city, street
             """;
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
@@ -245,7 +279,7 @@ public class AddressDAO {
         List<AddressModel> addresses = new ArrayList<>();
         String sql = "SELECT * FROM address WHERE zipCode REGEXP '^1[0-7][0-9]{2}$' ORDER BY zipCode, city";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
@@ -277,26 +311,15 @@ public class AddressDAO {
                                   'valenzuela', 'marikina', 'pasay', 'pateros')
             """;
         
-        // Count Taguig addresses specifically
-        String taguigSQL = "SELECT COUNT(*) FROM address WHERE LOWER(city) LIKE '%taguig%'";
-        
         // Count total addresses
         String totalSQL = "SELECT COUNT(*) FROM address";
         
-        try (Connection conn = DatabaseConnection.getConnection()) {
+        try (Connection conn = databaseConnection.createConnection()) {
             // Manila area count
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(manilaSQL)) {
                 if (rs.next()) {
                     stats.put("manilaArea", rs.getInt(1));
-                }
-            }
-            
-            // Taguig count
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery(taguigSQL)) {
-                if (rs.next()) {
-                    stats.put("taguig", rs.getInt(1));
                 }
             }
             
@@ -334,10 +357,14 @@ public class AddressDAO {
                     OR LOWER(province) LIKE '%national capital region%')
             """;
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement()) {
             
-            return stmt.executeUpdate(sql);
+            int corrected = stmt.executeUpdate(sql);
+            if (corrected > 0) {
+                System.out.println("✅ Auto-corrected " + corrected + " Manila province entries");
+            }
+            return corrected;
             
         } catch (SQLException e) {
             System.err.println("Error auto-correcting Manila provinces: " + e.getMessage());
@@ -348,18 +375,22 @@ public class AddressDAO {
     // ENHANCED SEARCH AND FILTER METHODS
     
     /**
-     * Find addresses by city with distance category
+     * Find addresses by city
      * @param city
      * @return 
      */
     public List<AddressModel> findByCity(String city) {
         List<AddressModel> addresses = new ArrayList<>();
+        if (city == null || city.trim().isEmpty()) {
+            return addresses;
+        }
+        
         String sql = "SELECT * FROM address WHERE LOWER(city) = LOWER(?) ORDER BY street";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            pstmt.setString(1, city);
+            pstmt.setString(1, city.trim());
             ResultSet rs = pstmt.executeQuery();
             
             while (rs.next()) {
@@ -372,18 +403,22 @@ public class AddressDAO {
     }
     
     /**
-     * Find addresses by province with Manila classification
+     * Find addresses by province
      * @param province
      * @return 
      */
     public List<AddressModel> findByProvince(String province) {
         List<AddressModel> addresses = new ArrayList<>();
+        if (province == null || province.trim().isEmpty()) {
+            return addresses;
+        }
+        
         String sql = "SELECT * FROM address WHERE LOWER(province) = LOWER(?) ORDER BY city, street";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            pstmt.setString(1, province);
+            pstmt.setString(1, province.trim());
             ResultSet rs = pstmt.executeQuery();
             
             while (rs.next()) {
@@ -403,9 +438,13 @@ public class AddressDAO {
      */
     public List<AddressModel> findByZipCodeRange(String startZip, String endZip) {
         List<AddressModel> addresses = new ArrayList<>();
+        if (startZip == null || endZip == null) {
+            return addresses;
+        }
+        
         String sql = "SELECT * FROM address WHERE zipCode BETWEEN ? AND ? ORDER BY zipCode, city";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setString(1, startZip);
@@ -429,6 +468,10 @@ public class AddressDAO {
      */
     public List<AddressModel> searchAddressesWithLocationPriority(String searchText) {
         List<AddressModel> addresses = new ArrayList<>();
+        if (searchText == null || searchText.trim().isEmpty()) {
+            return addresses;
+        }
+        
         String sql = """
             SELECT *, 
                    CASE WHEN (LOWER(province) LIKE '%metro manila%' 
@@ -438,17 +481,16 @@ public class AddressDAO {
                                                 'mandaluyong', 'san juan', 'muntinlupa', 'paranaque', 
                                                 'las pinas', 'caloocan', 'malabon', 'navotas', 
                                                 'valenzuela', 'marikina', 'pasay', 'pateros'))
-                        THEN 1 ELSE 2 END as location_priority,
-                   CASE WHEN LOWER(city) LIKE '%taguig%' THEN 0 ELSE 1 END as taguig_priority
+                        THEN 1 ELSE 2 END as location_priority
             FROM address 
             WHERE street LIKE ? OR barangay LIKE ? OR city LIKE ? OR province LIKE ? OR zipCode LIKE ?
-            ORDER BY taguig_priority, location_priority, city, street
+            ORDER BY location_priority, city, street
             """;
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            String searchPattern = "%" + searchText + "%";
+            String searchPattern = "%" + searchText.trim() + "%";
             for (int i = 1; i <= 5; i++) {
                 pstmt.setString(i, searchPattern);
             }
@@ -471,16 +513,20 @@ public class AddressDAO {
      */
     public List<AddressModel> searchAddresses(String searchText) {
         List<AddressModel> addresses = new ArrayList<>();
+        if (searchText == null || searchText.trim().isEmpty()) {
+            return addresses;
+        }
+        
         String sql = """
             SELECT * FROM address WHERE 
             street LIKE ? OR barangay LIKE ? OR city LIKE ? OR province LIKE ? OR zipCode LIKE ? 
             ORDER BY city, street
             """;
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            String searchPattern = "%" + searchText + "%";
+            String searchPattern = "%" + searchText.trim() + "%";
             for (int i = 1; i <= 5; i++) {
                 pstmt.setString(i, searchPattern);
             }
@@ -496,152 +542,6 @@ public class AddressDAO {
         return addresses;
     }
     
-    // PHILIPPINE LOCATION REFERENCE DATA
-    
-    /**
-     * Gets unique Manila area cities from database
-     * @return List of Manila cities found in database
-     */
-    public List<String> getManilaAreaCities() {
-        List<String> cities = new ArrayList<>();
-        String sql = """
-            SELECT DISTINCT city FROM address 
-            WHERE LOWER(province) LIKE '%metro manila%' 
-               OR LOWER(province) LIKE '%ncr%' 
-               OR LOWER(province) LIKE '%national capital region%'
-               OR LOWER(city) IN ('manila', 'quezon city', 'makati', 'taguig', 'pasig', 
-                                  'mandaluyong', 'san juan', 'muntinlupa', 'paranaque', 
-                                  'las pinas', 'caloocan', 'malabon', 'navotas', 
-                                  'valenzuela', 'marikina', 'pasay', 'pateros')
-            AND city IS NOT NULL 
-            ORDER BY city
-            """;
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                cities.add(rs.getString("city"));
-            }
-        } catch (SQLException e) {
-            System.err.println("Error getting Manila area cities: " + e.getMessage());
-        }
-        return cities;
-    }
-    
-    /**
-     * Get unique cities
-     * @return 
-     */
-    public List<String> getUniqueCities() {
-        List<String> cities = new ArrayList<>();
-        String sql = "SELECT DISTINCT city FROM address WHERE city IS NOT NULL ORDER BY city";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                cities.add(rs.getString("city"));
-            }
-        } catch (SQLException e) {
-            System.err.println("Error getting unique cities: " + e.getMessage());
-        }
-        return cities;
-    }
-    
-    /**
-     * Get unique provinces with Manila area indicator
-     * @return List of province maps with Manila area flag
-     */
-    public List<Map<String, Object>> getUniqueProvincesWithClassification() {
-        List<Map<String, Object>> provinces = new ArrayList<>();
-        String sql = """
-            SELECT DISTINCT province,
-                   CASE WHEN (LOWER(province) LIKE '%metro manila%' 
-                             OR LOWER(province) LIKE '%ncr%' 
-                             OR LOWER(province) LIKE '%national capital region%')
-                        THEN true ELSE false END as is_manila_area,
-                   COUNT(*) as address_count
-            FROM address 
-            WHERE province IS NOT NULL 
-            GROUP BY province
-            ORDER BY is_manila_area DESC, province
-            """;
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                Map<String, Object> provinceInfo = new HashMap<>();
-                provinceInfo.put("province", rs.getString("province"));
-                provinceInfo.put("is_manila_area", rs.getBoolean("is_manila_area"));
-                provinceInfo.put("address_count", rs.getInt("address_count"));
-                provinces.add(provinceInfo);
-            }
-        } catch (SQLException e) {
-            System.err.println("Error getting unique provinces with classification: " + e.getMessage());
-        }
-        return provinces;
-    }
-    
-    /**
-     * Get unique provinces (simple list)
-     * @return 
-     */
-    public List<String> getUniqueProvinces() {
-        List<String> provinces = new ArrayList<>();
-        String sql = "SELECT DISTINCT province FROM address WHERE province IS NOT NULL ORDER BY province";
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            while (rs.next()) {
-                provinces.add(rs.getString("province"));
-            }
-        } catch (SQLException e) {
-            System.err.println("Error getting unique provinces: " + e.getMessage());
-        }
-        return provinces;
-    }
-    
-    /**
-     * Get ZIP code ranges used in database
-     * @return Map with ZIP code range statistics
-     */
-    public Map<String, Object> getZipCodeRangeStatistics() {
-        Map<String, Object> stats = new HashMap<>();
-        String sql = """
-            SELECT 
-                MIN(zipCode) as min_zip,
-                MAX(zipCode) as max_zip,
-                COUNT(DISTINCT zipCode) as unique_zip_count,
-                COUNT(*) as total_addresses_with_zip,
-                SUM(CASE WHEN zipCode REGEXP '^1[0-7][0-9]{2}$' THEN 1 ELSE 0 END) as manila_zip_count
-            FROM address 
-            WHERE zipCode IS NOT NULL AND zipCode != ''
-            """;
-        
-        try (Connection conn = DatabaseConnection.getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            
-            if (rs.next()) {
-                stats.put("min_zip", rs.getString("min_zip"));
-                stats.put("max_zip", rs.getString("max_zip"));
-                stats.put("unique_zip_count", rs.getInt("unique_zip_count"));
-                stats.put("total_addresses_with_zip", rs.getInt("total_addresses_with_zip"));
-                stats.put("manila_zip_count", rs.getInt("manila_zip_count"));
-            }
-        } catch (SQLException e) {
-            System.err.println("Error getting ZIP code range statistics: " + e.getMessage());
-        }
-        return stats;
-    }
-    
     // UTILITY METHODS
     
     /**
@@ -652,7 +552,7 @@ public class AddressDAO {
     public boolean exists(int addressId) {
         String sql = "SELECT COUNT(*) FROM address WHERE addressId = ?";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             pstmt.setInt(1, addressId);
@@ -674,7 +574,7 @@ public class AddressDAO {
     public int getAddressCount() {
         String sql = "SELECT COUNT(*) FROM address";
         
-        try (Connection conn = DatabaseConnection.getConnection();
+        try (Connection conn = databaseConnection.createConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
@@ -693,70 +593,74 @@ public class AddressDAO {
      * @return true if address was modified during cleaning
      */
     public boolean validateAndCleanAddress(AddressModel address) {
-        boolean modified = false;
-        
-        if (address == null) return false;
-        
-        // Auto-correct Manila province if needed
-        if (address.autoCorrectManilaProvince()) {
-            modified = true;
+        if (address == null) {
+            return false;
         }
         
-        // Trim whitespace from all fields
-        if (address.getStreet() != null) {
-            String trimmed = address.getStreet().trim();
-            if (!trimmed.equals(address.getStreet())) {
-                address.setStreet(trimmed);
-                modified = true;
-            }
-        }
+        // Normalize the address (this will modify it)
+        address.normalizeAddress();
         
-        if (address.getBarangay() != null) {
-            String trimmed = address.getBarangay().trim();
-            if (!trimmed.equals(address.getBarangay())) {
-                address.setBarangay(trimmed);
-                modified = true;
-            }
-        }
-        
-        if (address.getCity() != null) {
-            String trimmed = address.getCity().trim();
-            if (!trimmed.equals(address.getCity())) {
-                address.setCity(trimmed);
-                modified = true;
-            }
-        }
-        
-        if (address.getProvince() != null) {
-            String trimmed = address.getProvince().trim();
-            if (!trimmed.equals(address.getProvince())) {
-                address.setProvince(trimmed);
-                modified = true;
-            }
-        }
-        
-        if (address.getZipCode() != null) {
-            String trimmed = address.getZipCode().trim();
-            if (!trimmed.equals(address.getZipCode())) {
-                address.setZipCode(trimmed);
-                modified = true;
-            }
-        }
-        
-        return modified;
+        // Return true to indicate the address might have been modified
+        return true;
     }
     
     /**
-     * Helper method to map ResultSet to AddressModel
+     * FIXED: Helper method to map ResultSet to AddressModel
+     * Uses the enhanced AddressModel with proper setters
      */
     private AddressModel mapResultSetToAddress(ResultSet rs) throws SQLException {
-        return new AddressModel(
-            rs.getInt("addressId"),
-            rs.getString("street"),
-            rs.getString("barangay"),
-            rs.getString("city"),
-            rs.getString("province"),
-            rs.getString("zipCode")
-        );
+        AddressModel address = new AddressModel();
+        
+        // Set all fields using setters
+        address.setAddressId(rs.getInt("addressId"));
+        address.setStreet(rs.getString("street"));
+        address.setBarangay(rs.getString("barangay"));
+        address.setCity(rs.getString("city"));
+        address.setProvince(rs.getString("province"));
+        address.setZipCode(rs.getString("zipCode"));
+        
+        return address;
+    }
+    
+    /**
+     * Get unique cities
+     * @return 
+     */
+    public List<String> getUniqueCities() {
+        List<String> cities = new ArrayList<>();
+        String sql = "SELECT DISTINCT city FROM address WHERE city IS NOT NULL ORDER BY city";
+        
+        try (Connection conn = databaseConnection.createConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            
+            while (rs.next()) {
+                cities.add(rs.getString("city"));
+            }
+        } catch (SQLException e) {
+            System.err.println("Error getting unique cities: " + e.getMessage());
+        }
+        return cities;
+    }
+    
+    /**
+     * Get unique provinces
+     * @return 
+     */
+    public List<String> getUniqueProvinces() {
+        List<String> provinces = new ArrayList<>();
+        String sql = "SELECT DISTINCT province FROM address WHERE province IS NOT NULL ORDER BY province";
+        
+        try (Connection conn = databaseConnection.createConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            
+            while (rs.next()) {
+                provinces.add(rs.getString("province"));
+            }
+        } catch (SQLException e) {
+            System.err.println("Error getting unique provinces: " + e.getMessage());
+        }
+        return provinces;
     }
 }
