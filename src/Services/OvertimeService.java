@@ -140,7 +140,7 @@ public class OvertimeService {
                 result.setSuccess(true);
                 result.setOvertimeRequestId(overtimeRequest.getOvertimeRequestId());
                 result.setMessage("Overtime request submitted successfully for " + employee.getFullName());
-                result.setOvertimeHours(overtimeRequest.getOvertimeHours());
+                result.setOvertimeHours(BigDecimal.valueOf(overtimeRequest.getOvertimeHours()));
                 result.setEstimatedPay(calculateOvertimePay(overtimeRequest, employee.getHourlyRate()));
 
                 System.out.println("✅ Overtime request submitted: " + employee.getFullName() +
@@ -188,7 +188,7 @@ public class OvertimeService {
             }
 
             // Check if already processed
-            if (overtimeRequest.isProcessed()) {
+            if (overtimeRequest.getApprovalStatus() != ApprovalStatus.PENDING) {
                 result.setSuccess(false);
                 result.setMessage("Overtime request has already been " + overtimeRequest.getApprovalStatus().getValue().toLowerCase());
                 return result;
@@ -295,11 +295,11 @@ public class OvertimeService {
      * @return Calculated overtime pay
      */
     public BigDecimal calculateOvertimePay(OvertimeRequestModel overtimeRequest, BigDecimal hourlyRate) {
-        if (hourlyRate == null || overtimeRequest.getOvertimeHours().equals(BigDecimal.ZERO)) {
+        if (hourlyRate == null || BigDecimal.valueOf(overtimeRequest.getOvertimeHours()).equals(BigDecimal.ZERO)) {
             return BigDecimal.ZERO;
         }
 
-        BigDecimal overtimeHours = overtimeRequest.getOvertimeHours();
+        BigDecimal overtimeHours = BigDecimal.valueOf(overtimeRequest.getOvertimeHours());
         BigDecimal multiplier = OVERTIME_MULTIPLIER; // Start with base overtime rate
 
         // Apply night shift differential if applicable

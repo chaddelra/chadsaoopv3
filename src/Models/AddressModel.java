@@ -311,4 +311,13 @@ public class AddressModel {
     public int hashCode() {
         return addressId != null ? addressId.hashCode() : 0;
     }
+    public String getFullAddress() {
+    StringBuilder fullAddress = new StringBuilder();
+    if (street != null) fullAddress.append(street).append(", ");
+    if (barangay != null) fullAddress.append(barangay).append(", ");
+    if (city != null) fullAddress.append(city).append(", ");
+    if (province != null) fullAddress.append(province);
+    if (zipCode != null) fullAddress.append(" ").append(zipCode);
+    return fullAddress.toString();
+}
 }

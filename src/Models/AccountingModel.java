@@ -1,7 +1,6 @@
 package Models;
 import Models.EmployeeModel.EmployeeStatus;
 import Services.*;
-import Services.PayrollService.PayrollProcessingResult;
 import Services.ReportService.*;
 import DAOs.*;
 import DAOs.DatabaseConnection;
@@ -49,7 +48,7 @@ public class AccountingModel extends EmployeeModel {
         DatabaseConnection dbConnection = new DatabaseConnection();
         this.payrollService = new PayrollService(dbConnection);
         this.reportService = new ReportService(dbConnection);
-        this.attendanceService = new AttendanceService(dbConnection);
+        this.attendanceService = new AttendanceService();
         
         // Initialize DAOs (only using confirmed existing ones)
         this.employeeDAO = new EmployeeDAO(dbConnection);
