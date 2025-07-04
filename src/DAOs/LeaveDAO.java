@@ -42,16 +42,9 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
         leave.setEmployeeId(rs.getInt("employeeId"));
         leave.setLeaveTypeId(rs.getInt("leaveTypeId"));
         
-        // Handle date fields - FIXED: Proper conversion
-        Date leaveStart = rs.getDate("leaveStart");
-        if (leaveStart != null) {
-            leave.setLeaveStart(leaveStart.toLocalDate());
-        }
-        
-        Date leaveEnd = rs.getDate("leaveEnd");
-        if (leaveEnd != null) {
-            leave.setLeaveEnd(leaveEnd.toLocalDate());
-        }
+        // Handle date fields - Direct assignment (no conversion needed)
+        leave.setLeaveStart(rs.getDate("leaveStart"));
+        leave.setLeaveEnd(rs.getDate("leaveEnd"));
         
         // Handle other fields
         leave.setLeaveReason(rs.getString("leaveReason"));
@@ -62,16 +55,9 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
             leave.setApprovalStatus(ApprovalStatus.fromString(statusStr));
         }
         
-        // Handle timestamp fields - FIXED: Proper conversion
-        Timestamp dateCreated = rs.getTimestamp("dateCreated");
-        if (dateCreated != null) {
-            leave.setDateCreated(dateCreated.toLocalDateTime());
-        }
-        
-        Timestamp dateApproved = rs.getTimestamp("dateApproved");
-        if (dateApproved != null) {
-            leave.setDateApproved(dateApproved.toLocalDateTime());
-        }
+        // Handle timestamp fields - Direct assignment (no conversion needed)
+        leave.setDateCreated(rs.getTimestamp("dateCreated"));
+        leave.setDateApproved(rs.getTimestamp("dateApproved"));
         
         leave.setSupervisorNotes(rs.getString("supervisorNotes"));
         
@@ -111,9 +97,9 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
         stmt.setInt(paramIndex++, leave.getEmployeeId());
         stmt.setInt(paramIndex++, leave.getLeaveTypeId());
         
-        // FIXED: Proper date conversion
-        stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveStart()));
-        stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveEnd()));
+        // Handle Date fields - Direct assignment
+        stmt.setDate(paramIndex++, leave.getLeaveStart());
+        stmt.setDate(paramIndex++, leave.getLeaveEnd());
         
         // Handle optional fields
         if (leave.getLeaveReason() != null) {
@@ -129,12 +115,8 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
             stmt.setString(paramIndex++, ApprovalStatus.PENDING.getValue());
         }
         
-        // Handle optional timestamp fields - FIXED: Proper null checking
-        if (leave.getDateApproved() != null) {
-            stmt.setTimestamp(paramIndex++, Timestamp.valueOf(leave.getDateApproved()));
-        } else {
-            stmt.setNull(paramIndex++, Types.TIMESTAMP);
-        }
+        // Handle optional timestamp fields - Direct assignment
+        stmt.setTimestamp(paramIndex++, leave.getDateApproved());
         
         if (leave.getSupervisorNotes() != null) {
             stmt.setString(paramIndex++, leave.getSupervisorNotes());
@@ -158,9 +140,9 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
         stmt.setInt(paramIndex++, leave.getEmployeeId());
         stmt.setInt(paramIndex++, leave.getLeaveTypeId());
         
-        // FIXED: Proper date conversion
-        stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveStart()));
-        stmt.setDate(paramIndex++, Date.valueOf(leave.getLeaveEnd()));
+        // Handle Date fields - Direct assignment
+        stmt.setDate(paramIndex++, leave.getLeaveStart());
+        stmt.setDate(paramIndex++, leave.getLeaveEnd());
         
         if (leave.getLeaveReason() != null) {
             stmt.setString(paramIndex++, leave.getLeaveReason());
@@ -174,12 +156,8 @@ public class LeaveDAO extends BaseDAO<LeaveRequestModel, Integer> {
             stmt.setString(paramIndex++, ApprovalStatus.PENDING.getValue());
         }
         
-        // FIXED: Proper null checking for timestamp
-        if (leave.getDateApproved() != null) {
-            stmt.setTimestamp(paramIndex++, Timestamp.valueOf(leave.getDateApproved()));
-        } else {
-            stmt.setNull(paramIndex++, Types.TIMESTAMP);
-        }
+        // Handle timestamp - Direct assignment
+        stmt.setTimestamp(paramIndex++, leave.getDateApproved());
         
         if (leave.getSupervisorNotes() != null) {
             stmt.setString(paramIndex++, leave.getSupervisorNotes());
