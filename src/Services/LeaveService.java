@@ -30,15 +30,12 @@ public class LeaveService {
         this.leaveBalanceDAO = new LeaveBalanceDAO();
         this.attendanceDAO = new AttendanceDAO();
     }
-    
-    /**
- * Constructor with DatabaseConnection (needed by ReportService)
- * @param databaseConnection Database connection
- */
+   
+   
 public LeaveService(DatabaseConnection databaseConnection) {
-    this.leaveRequestDAO = new LeaveRequestDAO(databaseConnection);
-    this.leaveBalanceDAO = new LeaveBalanceDAO(databaseConnection);
-    this.attendanceDAO = new AttendanceDAO(databaseConnection);
+    this.leaveRequestDAO = new LeaveRequestDAO();
+    this.leaveBalanceDAO = new LeaveBalanceDAO();
+    this.attendanceDAO = new AttendanceDAO();
 }
     
     public LeaveService(LeaveRequestDAO leaveRequestDAO, LeaveBalanceDAO leaveBalanceDAO, 

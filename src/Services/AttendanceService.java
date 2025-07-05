@@ -37,6 +37,8 @@ public class AttendanceService {
         // Removed employeeDAO initialization
     }
     
+    
+    
     public AttendanceService(AttendanceDAO attendanceDAO, TardinessRecordDAO tardinessRecordDAO) {
         this.attendanceDAO = attendanceDAO;
         this.tardinessRecordDAO = tardinessRecordDAO;
