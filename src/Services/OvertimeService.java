@@ -303,12 +303,12 @@ public class OvertimeService {
         BigDecimal multiplier = OVERTIME_MULTIPLIER; // Start with base overtime rate
 
         // Apply night shift differential if applicable
-        if (overtimeRequest.isNightShiftOvertime()) {
+        if (isNightShift(overtimeRequest.getOvertimeStart())) {
             multiplier = multiplier.add(NIGHT_SHIFT_MULTIPLIER.subtract(BigDecimal.ONE)); // Add night differential
         }
 
         // Apply weekend premium if applicable
-        if (overtimeRequest.isWeekendOvertime()) {
+        if (isWeekend(overtimeRequest.getOvertimeStart())) {
             multiplier = multiplier.add(WEEKEND_MULTIPLIER.subtract(BigDecimal.ONE)); // Add weekend premium
         }
 
@@ -330,7 +330,7 @@ public class OvertimeService {
             List<OvertimeRequestModel> overtimeRequests = overtimeDAO.findByDateRange(startDateTime, endDateTime);
 
             return overtimeRequests.stream()
-                    .filter(req -> req.getEmployeeId().equals(employeeId))
+                    .filter(req -> req.getEmployeeId() != null && req.getEmployeeId().equals(employeeId))
                     .filter(OvertimeRequestModel::isApproved)
                     .map(OvertimeRequestModel::getOvertimeHours)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
