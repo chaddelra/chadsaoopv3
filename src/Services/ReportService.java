@@ -6,16 +6,21 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.sql.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * ReportService - Business logic for generating various reports
- * Handles payroll reports, attendance reports, leave reports, and compliance reports
- * @author User
+ * Enhanced ReportService - Uses database views for complex payroll calculations
+ * Leverages monthly_employee_payslip and monthly_payroll_summary_report views
+ * @author chad
  */
 public class ReportService {
+    
+    // Manila timezone constant
+    public static final ZoneId MANILA_TIMEZONE = ZoneId.of("Asia/Manila");
     
     // DAO Dependencies
     private final DatabaseConnection databaseConnection;
@@ -73,156 +78,330 @@ public class ReportService {
     }
     
     // ================================
-    // PAYROLL REPORTS
+    // DATABASE VIEW-BASED PAYROLL REPORTS
     // ================================
     
     /**
-     * Generates comprehensive payroll report for a pay period
-     * @param payPeriodId Pay period ID
-     * @return PayrollReport with detailed payroll information
+     * Generate monthly payroll summary using monthly_payroll_summary_report view
+     * This leverages all the complex business logic in the database view
      */
-    public PayrollReport generatePayrollReport(Integer payPeriodId) {
-        PayrollReport report = new PayrollReport();
+    public MonthlyPayrollSummaryReport generateMonthlyPayrollSummaryFromView(YearMonth yearMonth) {
+        MonthlyPayrollSummaryReport report = new MonthlyPayrollSummaryReport();
+        report.setYearMonth(yearMonth);
+        report.setGeneratedDate(LocalDate.now(MANILA_TIMEZONE));
         
-        try {
-            // Get pay period information
-            PayPeriodModel payPeriod = payPeriodDAO.findById(payPeriodId);
-            if (payPeriod == null) {
+        String sql = """
+            SELECT * FROM monthly_payroll_summary_report 
+            WHERE DATE_FORMAT(`Pay Date`, '%Y-%m') = ?
+            ORDER BY `Employee ID`
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            String yearMonthStr = yearMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"));
+            stmt.setString(1, yearMonthStr);
+            
+            ResultSet rs = stmt.executeQuery();
+            List<PayrollSummaryEntry> entries = new ArrayList<>();
+            PayrollTotals totals = new PayrollTotals();
+            
+            while (rs.next()) {
+                String employeeIdStr = rs.getString("Employee ID");
+                
+                // Skip TOTAL row - handle separately
+                if ("TOTAL".equals(employeeIdStr)) {
+                    totals.setTotalBaseSalary(rs.getBigDecimal("Base Salary"));
+                    totals.setTotalLeaves(rs.getBigDecimal("Leaves"));
+                    totals.setTotalOvertime(rs.getBigDecimal("Overtime"));
+                    totals.setTotalGrossIncome(rs.getBigDecimal("GROSS INCOME"));
+                    totals.setTotalBenefits(rs.getBigDecimal("TOTAL BENEFITS"));
+                    totals.setTotalDeductions(rs.getBigDecimal("TOTAL DEDUCTIONS"));
+                    totals.setTotalNetPay(rs.getBigDecimal("NET PAY"));
+                    continue;
+                }
+                
+                PayrollSummaryEntry entry = new PayrollSummaryEntry();
+                entry.setEmployeeId(Integer.parseInt(employeeIdStr));
+                entry.setEmployeeName(rs.getString("Employee Name"));
+                entry.setPosition(rs.getString("Position"));
+                entry.setDepartment(rs.getString("Department"));
+                entry.setBaseSalary(rs.getBigDecimal("Base Salary"));
+                entry.setLeaves(rs.getBigDecimal("Leaves"));
+                entry.setOvertime(rs.getBigDecimal("Overtime"));
+                entry.setGrossIncome(rs.getBigDecimal("GROSS INCOME"));
+                entry.setRiceSubsidy(rs.getBigDecimal("Rice Subsidy"));
+                entry.setPhoneAllowance(rs.getBigDecimal("Phone Allowance"));
+                entry.setClothingAllowance(rs.getBigDecimal("Clothing Allowance"));
+                entry.setTotalBenefits(rs.getBigDecimal("TOTAL BENEFITS"));
+                entry.setSssNo(rs.getString("Social Security No"));
+                entry.setSssContribution(rs.getBigDecimal("Social Security Contribution"));
+                entry.setPhilhealthNo(rs.getString("Philhealth No"));
+                entry.setPhilhealthContribution(rs.getBigDecimal("Philhealth Contribution"));
+                entry.setPagibigNo(rs.getString("Pag-Ibig No"));
+                entry.setPagibigContribution(rs.getBigDecimal("Pag-Ibig Contribution"));
+                entry.setTin(rs.getString("TIN"));
+                entry.setWithholdingTax(rs.getBigDecimal("Withholding Tax"));
+                entry.setTotalDeductions(rs.getBigDecimal("TOTAL DEDUCTIONS"));
+                entry.setNetPay(rs.getBigDecimal("NET PAY"));
+                
+                // Determine if rank-and-file
+                entry.setRankAndFile(employeeDAO.isEmployeeRankAndFile(entry.getEmployeeId()));
+                
+                entries.add(entry);
+            }
+            
+            report.setPayrollEntries(entries);
+            report.setTotals(totals);
+            report.setTotalEmployees(entries.size());
+            report.setSuccess(true);
+            
+            System.out.println("✅ Generated monthly payroll summary from database view: " + 
+                             entries.size() + " employees processed");
+            
+        } catch (SQLException e) {
+            report.setSuccess(false);
+            report.setErrorMessage("Error generating payroll summary from view: " + e.getMessage());
+            System.err.println("Error generating payroll summary: " + e.getMessage());
+        }
+        
+        return report;
+    }
+    
+    /**
+     * Generate employee payslip using monthly_employee_payslip view
+     * This gives complete payslip details with all calculations done by the database
+     */
+    public EmployeePayslipReport generateEmployeePayslipFromView(Integer employeeId, YearMonth yearMonth) {
+        EmployeePayslipReport report = new EmployeePayslipReport();
+        report.setEmployeeId(employeeId);
+        report.setYearMonth(yearMonth);
+        report.setGeneratedDate(LocalDate.now(MANILA_TIMEZONE));
+        
+        String sql = """
+            SELECT * FROM monthly_employee_payslip 
+            WHERE `Employee ID` = ?
+            AND DATE_FORMAT(`Period Start Date`, '%Y-%m') = ?
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setInt(1, employeeId);
+            String yearMonthStr = yearMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"));
+            stmt.setString(2, yearMonthStr);
+            
+            ResultSet rs = stmt.executeQuery();
+            
+            if (rs.next()) {
+                PayslipDetails payslip = new PayslipDetails();
+                
+                // Basic Information
+                payslip.setPayslipNo(rs.getString("Payslip No"));
+                payslip.setEmployeeId(rs.getInt("Employee ID"));
+                payslip.setEmployeeName(rs.getString("Employee Name"));
+                payslip.setPeriodStartDate(rs.getDate("Period Start Date").toLocalDate());
+                payslip.setPeriodEndDate(rs.getDate("Period End Date").toLocalDate());
+                payslip.setPayDate(rs.getDate("Pay Date").toLocalDate());
+                payslip.setEmployeePosition(rs.getString("Employee Position"));
+                payslip.setDepartment(rs.getString("Department"));
+                
+                // Government IDs
+                payslip.setTin(rs.getString("TIN"));
+                payslip.setSssNo(rs.getString("SSS No"));
+                payslip.setPagibigNo(rs.getString("Pagibig No"));
+                payslip.setPhilhealthNo(rs.getString("Philhealth No"));
+                
+                // Salary Information
+                payslip.setMonthlyRate(rs.getBigDecimal("Monthly Rate"));
+                payslip.setDailyRate(rs.getBigDecimal("Daily Rate"));
+                payslip.setDaysWorked(rs.getBigDecimal("Days Worked"));
+                payslip.setLeavesTaken(rs.getBigDecimal("Leaves Taken"));
+                payslip.setOvertimeHours(rs.getBigDecimal("Overtime Hours"));
+                payslip.setGrossIncome(rs.getBigDecimal("GROSS INCOME"));
+                
+                // Benefits
+                payslip.setRiceSubsidy(rs.getBigDecimal("Rice Subsidy"));
+                payslip.setPhoneAllowance(rs.getBigDecimal("Phone Allowance"));
+                payslip.setClothingAllowance(rs.getBigDecimal("Clothing Allowance"));
+                payslip.setTotalBenefits(rs.getBigDecimal("TOTAL BENEFITS"));
+                
+                // Deductions
+                payslip.setSocialSecuritySystem(rs.getBigDecimal("Social Security System"));
+                payslip.setPhilhealth(rs.getBigDecimal("Philhealth"));
+                payslip.setPagIbig(rs.getBigDecimal("Pag-Ibig"));
+                payslip.setWithholdingTax(rs.getBigDecimal("Withholding Tax"));
+                payslip.setTotalDeductions(rs.getBigDecimal("TOTAL DEDUCTIONS"));
+                
+                // Summary
+                payslip.setGrossIncomeSummary(rs.getBigDecimal("GROSS INCOME SUMMARY"));
+                payslip.setTotalBenefitsSummary(rs.getBigDecimal("TOTAL BENEFITS SUMMARY"));
+                payslip.setTotalDeductionsSummary(rs.getBigDecimal("TOTAL DEDUCTIONS SUMMARY"));
+                payslip.setNetPay(rs.getBigDecimal("NET PAY"));
+                
+                // Determine if rank-and-file
+                payslip.setRankAndFile(employeeDAO.isEmployeeRankAndFile(employeeId));
+                
+                report.setPayslip(payslip);
+                report.setSuccess(true);
+                
+                System.out.println("✅ Generated payslip from database view for employee: " + 
+                                 payslip.getEmployeeName() + " (" + yearMonth + ")");
+                
+            } else {
                 report.setSuccess(false);
-                report.setErrorMessage("Pay period not found: " + payPeriodId);
-                return report;
+                report.setErrorMessage("No payslip data found for employee " + employeeId + " in " + yearMonth);
             }
             
-            report.setPayPeriodId(payPeriodId);
-            report.setPeriodName(payPeriod.getPeriodName());
-            report.setStartDate(payPeriod.getStartDate());
-            report.setEndDate(payPeriod.getEndDate());
-            report.setGeneratedDate(LocalDate.now());
-            
-            // Get payroll summary
-            PayrollDAO.PayrollSummary summary = payrollDAO.getPayrollSummary(payPeriodId);
-            report.setTotalEmployees(summary.getEmployeeCount());
-            report.setTotalGrossIncome(summary.getTotalGrossIncome());
-            report.setTotalNetSalary(summary.getTotalNetSalary());
-            report.setTotalDeductions(summary.getTotalDeductions());
-            report.setTotalBenefits(summary.getTotalBenefits());
-            
-            // Get individual payroll records
-            List<PayrollModel> payrollRecords = payrollDAO.findByPayPeriod(payPeriodId);
-            List<PayrollReportEntry> reportEntries = new ArrayList<>();
-            
-            for (PayrollModel payroll : payrollRecords) {
-                EmployeeModel employee = employeeDAO.findById(payroll.getEmployeeId());
-                if (employee != null) {
-                    PayrollReportEntry entry = new PayrollReportEntry();
-                    entry.setEmployeeId(employee.getEmployeeId());
-                    entry.setEmployeeName(employee.getFullName());
-                    entry.setPosition(getEmployeePosition(employee.getPositionId()));
-                    entry.setBasicSalary(payroll.getBasicSalary());
-                    entry.setGrossIncome(payroll.getGrossIncome());
-                    entry.setTotalDeductions(payroll.getTotalDeduction());
-                    entry.setNetSalary(payroll.getNetSalary());
-                    
-                    reportEntries.add(entry);
-                }
-            }
-            
-            report.setPayrollEntries(reportEntries);
-            report.setSuccess(true);
-            
-        } catch (Exception e) {
+        } catch (SQLException e) {
             report.setSuccess(false);
-            report.setErrorMessage("Error generating payroll report: " + e.getMessage());
-            System.err.println("Error generating payroll report: " + e.getMessage());
+            report.setErrorMessage("Error generating payslip from view: " + e.getMessage());
+            System.err.println("Error generating payslip: " + e.getMessage());
         }
         
         return report;
     }
     
     /**
-     * Generates salary comparison report
-     * @param startDate Start date for comparison
-     * @param endDate End date for comparison
-     * @return SalaryComparisonReport with salary analysis
+     * Generate rank-and-file overtime report using database views
+     * Focuses on employees eligible for overtime (rank-and-file only)
      */
-    public SalaryComparisonReport generateSalaryComparisonReport(LocalDate startDate, LocalDate endDate) {
-        SalaryComparisonReport report = new SalaryComparisonReport();
-        report.setStartDate(startDate);
-        report.setEndDate(endDate);
-        report.setGeneratedDate(LocalDate.now());
+    public RankAndFileOvertimeReport generateRankAndFileOvertimeReport(YearMonth yearMonth) {
+        RankAndFileOvertimeReport report = new RankAndFileOvertimeReport();
+        report.setYearMonth(yearMonth);
+        report.setGeneratedDate(LocalDate.now(MANILA_TIMEZONE));
         
-        try {
-            List<EmployeeModel> activeEmployees = employeeDAO.getActiveEmployees();
-            List<SalaryEntry> salaryEntries = new ArrayList<>();
+        String sql = """
+            SELECT * FROM monthly_employee_payslip 
+            WHERE DATE_FORMAT(`Period Start Date`, '%Y-%m') = ?
+            AND `Overtime Hours` > 0
+            ORDER BY `Overtime Hours` DESC
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
             
-            BigDecimal totalSalaries = BigDecimal.ZERO;
-            BigDecimal highestSalary = BigDecimal.ZERO;
-            BigDecimal lowestSalary = new BigDecimal("999999999");
+            String yearMonthStr = yearMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"));
+            stmt.setString(1, yearMonthStr);
             
-            for (EmployeeModel employee : activeEmployees) {
-                SalaryEntry entry = new SalaryEntry();
-                entry.setEmployeeId(employee.getEmployeeId());
-                entry.setEmployeeName(employee.getFullName());
-                entry.setPosition(getEmployeePosition(employee.getPositionId()));
-                entry.setBasicSalary(employee.getBasicSalary());
-                entry.setHourlyRate(employee.getHourlyRate());
+            ResultSet rs = stmt.executeQuery();
+            List<OvertimeEntry> overtimeEntries = new ArrayList<>();
+            BigDecimal totalOvertimeHours = BigDecimal.ZERO;
+            BigDecimal totalOvertimePay = BigDecimal.ZERO;
+            
+            while (rs.next()) {
+                Integer empId = rs.getInt("Employee ID");
                 
-                // Calculate average net pay for the period
-                List<PayrollModel> payrollHistory = payrollDAO.getPayrollHistory(employee.getEmployeeId(), 0);
-                BigDecimal averageNetPay = payrollHistory.stream()
-                        .map(PayrollModel::getNetSalary)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add);
-                
-                if (!payrollHistory.isEmpty()) {
-                    averageNetPay = averageNetPay.divide(new BigDecimal(payrollHistory.size()), 2, RoundingMode.HALF_UP);
-                }
-                
-                entry.setAverageNetPay(averageNetPay);
-                salaryEntries.add(entry);
-                
-                // Update statistics
-                totalSalaries = totalSalaries.add(employee.getBasicSalary());
-                if (employee.getBasicSalary().compareTo(highestSalary) > 0) {
-                    highestSalary = employee.getBasicSalary();
-                }
-                if (employee.getBasicSalary().compareTo(lowestSalary) < 0) {
-                    lowestSalary = employee.getBasicSalary();
+                // Only include rank-and-file employees (they're the only ones eligible for overtime)
+                if (employeeDAO.isEmployeeRankAndFile(empId)) {
+                    OvertimeEntry entry = new OvertimeEntry();
+                    entry.setEmployeeId(empId);
+                    entry.setEmployeeName(rs.getString("Employee Name"));
+                    entry.setDepartment(rs.getString("Department"));
+                    entry.setOvertimeHours(rs.getBigDecimal("Overtime Hours"));
+                    entry.setDailyRate(rs.getBigDecimal("Daily Rate"));
+                    
+                    // Calculate overtime pay (1.25x rate for rank-and-file)
+                    BigDecimal hourlyRate = rs.getBigDecimal("Daily Rate").divide(new BigDecimal("8"), 2, RoundingMode.HALF_UP);
+                    BigDecimal overtimePay = entry.getOvertimeHours()
+                                               .multiply(hourlyRate)
+                                               .multiply(new BigDecimal("1.25"));
+                    entry.setOvertimePay(overtimePay);
+                    entry.setRankAndFile(true);
+                    
+                    overtimeEntries.add(entry);
+                    totalOvertimeHours = totalOvertimeHours.add(entry.getOvertimeHours());
+                    totalOvertimePay = totalOvertimePay.add(overtimePay);
                 }
             }
             
-            // Calculate averages
-            if (!activeEmployees.isEmpty()) {
-                BigDecimal averageSalary = totalSalaries.divide(new BigDecimal(activeEmployees.size()), 2, RoundingMode.HALF_UP);
-                report.setAverageSalary(averageSalary);
+            report.setOvertimeEntries(overtimeEntries);
+            report.setTotalOvertimeHours(totalOvertimeHours);
+            report.setTotalOvertimePay(totalOvertimePay);
+            report.setTotalRankAndFileEmployeesWithOvertime(overtimeEntries.size());
+            
+            if (!overtimeEntries.isEmpty()) {
+                BigDecimal avgHours = totalOvertimeHours.divide(new BigDecimal(overtimeEntries.size()), 2, RoundingMode.HALF_UP);
+                report.setAverageOvertimeHoursPerEmployee(avgHours);
             }
             
-            report.setSalaryEntries(salaryEntries);
-            report.setHighestSalary(highestSalary);
-            report.setLowestSalary(lowestSalary);
-            report.setTotalEmployees(activeEmployees.size());
             report.setSuccess(true);
             
-        } catch (Exception e) {
+            System.out.println("✅ Generated rank-and-file overtime report: " + 
+                             overtimeEntries.size() + " employees with overtime");
+            
+        } catch (SQLException e) {
             report.setSuccess(false);
-            report.setErrorMessage("Error generating salary comparison report: " + e.getMessage());
+            report.setErrorMessage("Error generating rank-and-file overtime report: " + e.getMessage());
+            System.err.println("Error generating overtime report: " + e.getMessage());
+        }
+        
+        return report;
+    }
+    
+    /**
+     * Generate government compliance report using database views
+     * Pulls deduction data directly from the payroll views
+     */
+    public GovernmentComplianceReport generateGovernmentComplianceFromView(YearMonth yearMonth) {
+        GovernmentComplianceReport report = new GovernmentComplianceReport();
+        report.setYearMonth(yearMonth);
+        report.setGeneratedDate(LocalDate.now(MANILA_TIMEZONE));
+        
+        String sql = """
+            SELECT 
+                SUM(`Social Security Contribution`) as total_sss,
+                SUM(`Philhealth Contribution`) as total_philhealth,
+                SUM(`Pag-Ibig Contribution`) as total_pagibig,
+                SUM(`Withholding Tax`) as total_withholding_tax,
+                COUNT(*) as total_employees
+            FROM monthly_payroll_summary_report 
+            WHERE DATE_FORMAT(`Pay Date`, '%Y-%m') = ?
+            AND `Employee ID` != 'TOTAL'
+            """;
+        
+        try (Connection conn = databaseConnection.createConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            String yearMonthStr = yearMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"));
+            stmt.setString(1, yearMonthStr);
+            
+            ResultSet rs = stmt.executeQuery();
+            
+            if (rs.next()) {
+                report.setTotalSSS(rs.getBigDecimal("total_sss"));
+                report.setTotalPhilHealth(rs.getBigDecimal("total_philhealth"));
+                report.setTotalPagIbig(rs.getBigDecimal("total_pagibig"));
+                report.setTotalWithholdingTax(rs.getBigDecimal("total_withholding_tax"));
+                report.setTotalEmployees(rs.getInt("total_employees"));
+                report.setSuccess(true);
+                
+                System.out.println("✅ Generated government compliance report from database view for " + yearMonth);
+            } else {
+                report.setSuccess(false);
+                report.setErrorMessage("No payroll data found for " + yearMonth);
+            }
+            
+        } catch (SQLException e) {
+            report.setSuccess(false);
+            report.setErrorMessage("Error generating compliance report: " + e.getMessage());
+            System.err.println("Error generating compliance report: " + e.getMessage());
         }
         
         return report;
     }
     
     // ================================
-    // ATTENDANCE REPORTS
+    // ATTENDANCE REPORTS (Existing - Enhanced)
     // ================================
     
     /**
      * Generates daily attendance report
-     * @param date Date to generate report for
-     * @return AttendanceReport with daily attendance data
      */
     public AttendanceReport generateDailyAttendanceReport(LocalDate date) {
         AttendanceReport report = new AttendanceReport();
         report.setReportDate(date);
-        report.setGeneratedDate(LocalDate.now());
+        report.setGeneratedDate(LocalDate.now(MANILA_TIMEZONE));
         report.setReportType("Daily Attendance");
         
         try {
@@ -258,584 +437,411 @@ public class ReportService {
         return report;
     }
     
-    /**
-     * Generates monthly attendance summary
-     * @param yearMonth Year and month
-     * @return MonthlyAttendanceReport with attendance statistics
-     */
-    public MonthlyAttendanceReport generateMonthlyAttendanceReport(YearMonth yearMonth) {
-        MonthlyAttendanceReport report = new MonthlyAttendanceReport();
-        report.setYearMonth(yearMonth);
-        report.setGeneratedDate(LocalDate.now());
-        
-        try {
-            List<EmployeeModel> activeEmployees = employeeDAO.getActiveEmployees();
-            List<EmployeeAttendanceSummary> employeeSummaries = new ArrayList<>();
-            
-            for (EmployeeModel employee : activeEmployees) {
-                AttendanceService.AttendanceSummary summary = 
-                        attendanceService.getMonthlyAttendanceSummary(employee.getEmployeeId(), yearMonth);
-                
-                EmployeeAttendanceSummary empSummary = new EmployeeAttendanceSummary();
-                empSummary.setEmployeeId(employee.getEmployeeId());
-                empSummary.setEmployeeName(employee.getFullName());
-                empSummary.setTotalDays(summary.getTotalDays());
-                empSummary.setCompleteDays(summary.getCompleteDays());
-                empSummary.setTotalHours(summary.getTotalHours());
-                empSummary.setAttendanceRate(summary.getAttendanceRate());
-                empSummary.setLateInstances(summary.getLateInstances());
-                
-                employeeSummaries.add(empSummary);
-            }
-            
-            report.setEmployeeSummaries(employeeSummaries);
-            
-            // Calculate overall statistics
-            int totalCompleteDays = employeeSummaries.stream().mapToInt(EmployeeAttendanceSummary::getCompleteDays).sum();
-            int totalPossibleDays = employeeSummaries.stream().mapToInt(EmployeeAttendanceSummary::getTotalDays).sum();
-            
-            if (totalPossibleDays > 0) {
-                BigDecimal overallAttendanceRate = new BigDecimal(totalCompleteDays)
-                        .divide(new BigDecimal(totalPossibleDays), 4, RoundingMode.HALF_UP)
-                        .multiply(new BigDecimal(100));
-                report.setOverallAttendanceRate(overallAttendanceRate);
-            }
-            
-            report.setSuccess(true);
-            
-        } catch (Exception e) {
-            report.setSuccess(false);
-            report.setErrorMessage("Error generating monthly attendance report: " + e.getMessage());
-        }
-        
-        return report;
-    }
-    
-    // ================================
-    // LEAVE REPORTS
-    // ================================
-    
-    /**
-     * Generates leave summary report
-     * @param year Year to generate report for
-     * @return LeaveReport with leave statistics
-     */
-    public LeaveReport generateLeaveReport(Integer year) {
-        LeaveReport report = new LeaveReport();
-        report.setYear(year);
-        report.setGeneratedDate(LocalDate.now());
-        
-        try {
-            List<EmployeeModel> activeEmployees = employeeDAO.getActiveEmployees();
-            List<EmployeeLeaveSummary> leaveSummaries = new ArrayList<>();
-            
-            for (EmployeeModel employee : activeEmployees) {
-                LeaveService.LeaveSummary summary = leaveService.getEmployeeLeaveSummary(employee.getEmployeeId(), year);
-                
-                EmployeeLeaveSummary empSummary = new EmployeeLeaveSummary();
-                empSummary.setEmployeeId(employee.getEmployeeId());
-                empSummary.setEmployeeName(employee.getFullName());
-                empSummary.setTotalAllocatedDays(summary.getTotalAllocatedDays());
-                empSummary.setTotalUsedDays(summary.getTotalUsedDays());
-                empSummary.setTotalRemainingDays(summary.getTotalRemainingDays());
-                
-                // Calculate usage percentage
-                if (summary.getTotalAllocatedDays() > 0) {
-                    BigDecimal usagePercentage = new BigDecimal(summary.getTotalUsedDays())
-                            .divide(new BigDecimal(summary.getTotalAllocatedDays()), 4, RoundingMode.HALF_UP)
-                            .multiply(new BigDecimal(100));
-                    empSummary.setUsagePercentage(usagePercentage);
-                }
-                
-                leaveSummaries.add(empSummary);
-            }
-            
-            report.setLeaveSummaries(leaveSummaries);
-            
-            // Calculate overall statistics
-            int totalAllocated = leaveSummaries.stream().mapToInt(EmployeeLeaveSummary::getTotalAllocatedDays).sum();
-            int totalUsed = leaveSummaries.stream().mapToInt(EmployeeLeaveSummary::getTotalUsedDays).sum();
-            
-            report.setTotalAllocatedDays(totalAllocated);
-            report.setTotalUsedDays(totalUsed);
-            
-            if (totalAllocated > 0) {
-                BigDecimal overallUsageRate = new BigDecimal(totalUsed)
-                        .divide(new BigDecimal(totalAllocated), 4, RoundingMode.HALF_UP)
-                        .multiply(new BigDecimal(100));
-                report.setOverallUsageRate(overallUsageRate);
-            }
-            
-            report.setSuccess(true);
-            
-        } catch (Exception e) {
-            report.setSuccess(false);
-            report.setErrorMessage("Error generating leave report: " + e.getMessage());
-        }
-        
-        return report;
-    }
-    
-    // ================================
-    // OVERTIME REPORTS
-    // ================================
-    
-    /**
-     * Generates overtime summary report
-     * @param startDate Start date
-     * @param endDate End date
-     * @return OvertimeReport with overtime statistics
-     */
-    public OvertimeReport generateOvertimeReport(LocalDate startDate, LocalDate endDate) {
-        OvertimeReport report = new OvertimeReport();
-        report.setStartDate(startDate);
-        report.setEndDate(endDate);
-        report.setGeneratedDate(LocalDate.now());
-        
-        try {
-            List<OvertimeService.OvertimeRanking> rankings = 
-                    overtimeService.getTopOvertimeEmployees(startDate, endDate, 0); // No limit
-            
-            report.setOvertimeRankings(rankings);
-            
-            // Calculate totals
-            BigDecimal totalOvertimeHours = rankings.stream()
-                    .map(OvertimeService.OvertimeRanking::getTotalOvertimeHours)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            
-            BigDecimal totalOvertimePay = rankings.stream()
-                    .map(OvertimeService.OvertimeRanking::getTotalOvertimePay)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            
-            report.setTotalOvertimeHours(totalOvertimeHours);
-            report.setTotalOvertimePay(totalOvertimePay);
-            report.setTotalEmployeesWithOvertime(rankings.size());
-            
-            if (!rankings.isEmpty()) {
-                BigDecimal averageHoursPerEmployee = totalOvertimeHours
-                        .divide(new BigDecimal(rankings.size()), 2, RoundingMode.HALF_UP);
-                report.setAverageOvertimeHoursPerEmployee(averageHoursPerEmployee);
-            }
-            
-            report.setSuccess(true);
-            
-        } catch (Exception e) {
-            report.setSuccess(false);
-            report.setErrorMessage("Error generating overtime report: " + e.getMessage());
-        }
-        
-        return report;
-    }
-    
-    // ================================
-    // COMPLIANCE REPORTS
-    // ================================
-    
-    /**
-     * Generates government compliance report (BIR, SSS, PhilHealth, Pag-IBIG)
-     * @param yearMonth Year and month for compliance
-     * @return ComplianceReport with government contribution details
-     */
-    public ComplianceReport generateComplianceReport(YearMonth yearMonth) {
-        ComplianceReport report = new ComplianceReport();
-        report.setYearMonth(yearMonth);
-        report.setGeneratedDate(LocalDate.now());
-        
-        try {
-            // This would need to be implemented with proper deduction calculations
-            // For now, providing a basic structure
-            
-            List<EmployeeModel> activeEmployees = employeeDAO.getActiveEmployees();
-            BigDecimal totalSSS = BigDecimal.ZERO;
-            BigDecimal totalPhilHealth = BigDecimal.ZERO;
-            BigDecimal totalPagIbig = BigDecimal.ZERO;
-            BigDecimal totalWithholdingTax = BigDecimal.ZERO;
-            
-            for (EmployeeModel employee : activeEmployees) {
-                // Calculate government contributions based on basic salary
-                BigDecimal basicSalary = employee.getBasicSalary();
-                
-                // SSS: 4.5% employee + 8.5% employer = 13%
-                BigDecimal sssEmployee = basicSalary.multiply(new BigDecimal("0.045"));
-                BigDecimal sssEmployer = basicSalary.multiply(new BigDecimal("0.085"));
-                totalSSS = totalSSS.add(sssEmployee).add(sssEmployer);
-                
-                // PhilHealth: 2.75% employee + 2.75% employer = 5.5%
-                BigDecimal philhealthEmployee = basicSalary.multiply(new BigDecimal("0.0275"));
-                BigDecimal philhealthEmployer = basicSalary.multiply(new BigDecimal("0.0275"));
-                totalPhilHealth = totalPhilHealth.add(philhealthEmployee).add(philhealthEmployer);
-                
-                // Pag-IBIG: 2% employee + 2% employer = 4%
-                BigDecimal pagibigEmployee = basicSalary.multiply(new BigDecimal("0.02"));
-                BigDecimal pagibigEmployer = basicSalary.multiply(new BigDecimal("0.02"));
-                totalPagIbig = totalPagIbig.add(pagibigEmployee).add(pagibigEmployer);
-                
-                // Withholding Tax (simplified calculation)
-                totalWithholdingTax = totalWithholdingTax.add(calculateSimpleWithholdingTax(basicSalary));
-            }
-            
-            report.setTotalSSS(totalSSS);
-            report.setTotalPhilHealth(totalPhilHealth);
-            report.setTotalPagIbig(totalPagIbig);
-            report.setTotalWithholdingTax(totalWithholdingTax);
-            report.setTotalEmployees(activeEmployees.size());
-            report.setSuccess(true);
-            
-        } catch (Exception e) {
-            report.setSuccess(false);
-            report.setErrorMessage("Error generating compliance report: " + e.getMessage());
-        }
-        
-        return report;
-    }
-    
     // ================================
     // HELPER METHODS
     // ================================
     
     /**
-     * Gets employee position name (placeholder - would need Position DAO)
+     * Get current Manila time for timestamping reports
      */
-    private String getEmployeePosition(Integer positionId) {
-        // This would need a PositionDAO to get actual position names
-        return positionId != null ? "Position " + positionId : "Unknown";
+    public LocalDate getCurrentManilaDate() {
+        return LocalDate.now(MANILA_TIMEZONE);
     }
     
     /**
-     * Simplified withholding tax calculation
-     */
-    private BigDecimal calculateSimpleWithholdingTax(BigDecimal basicSalary) {
-        if (basicSalary.compareTo(new BigDecimal("20833")) <= 0) {
-            return BigDecimal.ZERO;
-        } else {
-            return basicSalary.multiply(new BigDecimal("0.15")).setScale(2, RoundingMode.HALF_UP);
-        }
-    }
-    
-    /**
-     * Formats currency for display
+     * Format currency for display
      */
     public String formatCurrency(BigDecimal amount) {
         return "₱" + String.format("%,.2f", amount);
     }
     
     /**
-     * Formats date for display
+     * Format date for display
      */
     public String formatDate(LocalDate date) {
         return date.format(DateTimeFormatter.ofPattern("MMMM dd, yyyy"));
     }
     
     /**
-     * Formats percentage for display
+     * Format percentage for display
      */
     public String formatPercentage(BigDecimal percentage) {
         return String.format("%.2f%%", percentage);
     }
     
     // ================================
-    // INNER CLASSES - REPORT MODELS
+    // NEW REPORT MODELS FOR DATABASE VIEWS
     // ================================
     
     /**
-     * Base report class
+     * Monthly Payroll Summary Report (from monthly_payroll_summary_report view)
      */
-    public static abstract class BaseReport {
+    public static class MonthlyPayrollSummaryReport {
         private boolean success = false;
         private String errorMessage = "";
+        private YearMonth yearMonth;
         private LocalDate generatedDate;
+        private int totalEmployees = 0;
+        private List<PayrollSummaryEntry> payrollEntries = new ArrayList<>();
+        private PayrollTotals totals = new PayrollTotals();
         
+        // Getters and setters
         public boolean isSuccess() { return success; }
         public void setSuccess(boolean success) { this.success = success; }
         public String getErrorMessage() { return errorMessage; }
         public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
-        public LocalDate getGeneratedDate() { return generatedDate; }
-        public void setGeneratedDate(LocalDate generatedDate) { this.generatedDate = generatedDate; }
-    }
-    
-    /**
-     * Payroll report
-     */
-    public static class PayrollReport extends BaseReport {
-        private Integer payPeriodId;
-        private String periodName;
-        private LocalDate startDate;
-        private LocalDate endDate;
-        private int totalEmployees = 0;
-        private BigDecimal totalGrossIncome = BigDecimal.ZERO;
-        private BigDecimal totalNetSalary = BigDecimal.ZERO;
-        private BigDecimal totalDeductions = BigDecimal.ZERO;
-        private BigDecimal totalBenefits = BigDecimal.ZERO;
-        private List<PayrollReportEntry> payrollEntries = new ArrayList<>();
-        
-        // Getters and setters
-        public Integer getPayPeriodId() { return payPeriodId; }
-        public void setPayPeriodId(Integer payPeriodId) { this.payPeriodId = payPeriodId; }
-        public String getPeriodName() { return periodName; }
-        public void setPeriodName(String periodName) { this.periodName = periodName; }
-        public LocalDate getStartDate() { return startDate; }
-        public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
-        public LocalDate getEndDate() { return endDate; }
-        public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
-        public int getTotalEmployees() { return totalEmployees; }
-        public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
-        public BigDecimal getTotalGrossIncome() { return totalGrossIncome; }
-        public void setTotalGrossIncome(BigDecimal totalGrossIncome) { this.totalGrossIncome = totalGrossIncome; }
-        public BigDecimal getTotalNetSalary() { return totalNetSalary; }
-        public void setTotalNetSalary(BigDecimal totalNetSalary) { this.totalNetSalary = totalNetSalary; }
-        public BigDecimal getTotalDeductions() { return totalDeductions; }
-        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
-        public BigDecimal getTotalBenefits() { return totalBenefits; }
-        public void setTotalBenefits(BigDecimal totalBenefits) { this.totalBenefits = totalBenefits; }
-        public List<PayrollReportEntry> getPayrollEntries() { return payrollEntries; }
-        public void setPayrollEntries(List<PayrollReportEntry> payrollEntries) { this.payrollEntries = payrollEntries; }
-    }
-    
-    /**
-     * Individual payroll entry for reports
-     */
-    public static class PayrollReportEntry {
-        private Integer employeeId;
-        private String employeeName;
-        private String position;
-        private BigDecimal basicSalary = BigDecimal.ZERO;
-        private BigDecimal grossIncome = BigDecimal.ZERO;
-        private BigDecimal totalDeductions = BigDecimal.ZERO;
-        private BigDecimal netSalary = BigDecimal.ZERO;
-        
-        // Getters and setters
-        public Integer getEmployeeId() { return employeeId; }
-        public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
-        public String getEmployeeName() { return employeeName; }
-        public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
-        public String getPosition() { return position; }
-        public void setPosition(String position) { this.position = position; }
-        public BigDecimal getBasicSalary() { return basicSalary; }
-        public void setBasicSalary(BigDecimal basicSalary) { this.basicSalary = basicSalary; }
-        public BigDecimal getGrossIncome() { return grossIncome; }
-        public void setGrossIncome(BigDecimal grossIncome) { this.grossIncome = grossIncome; }
-        public BigDecimal getTotalDeductions() { return totalDeductions; }
-        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
-        public BigDecimal getNetSalary() { return netSalary; }
-        public void setNetSalary(BigDecimal netSalary) { this.netSalary = netSalary; }
-    }
-    
-    /**
-     * Salary comparison report
-     */
-    public static class SalaryComparisonReport extends BaseReport {
-        private LocalDate startDate;
-        private LocalDate endDate;
-        private int totalEmployees = 0;
-        private BigDecimal averageSalary = BigDecimal.ZERO;
-        private BigDecimal highestSalary = BigDecimal.ZERO;
-        private BigDecimal lowestSalary = BigDecimal.ZERO;
-        private List<SalaryEntry> salaryEntries = new ArrayList<>();
-        
-        // Getters and setters
-        public LocalDate getStartDate() { return startDate; }
-        public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
-        public LocalDate getEndDate() { return endDate; }
-        public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
-        public int getTotalEmployees() { return totalEmployees; }
-        public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
-        public BigDecimal getAverageSalary() { return averageSalary; }
-        public void setAverageSalary(BigDecimal averageSalary) { this.averageSalary = averageSalary; }
-        public BigDecimal getHighestSalary() { return highestSalary; }
-        public void setHighestSalary(BigDecimal highestSalary) { this.highestSalary = highestSalary; }
-        public BigDecimal getLowestSalary() { return lowestSalary; }
-        public void setLowestSalary(BigDecimal lowestSalary) { this.lowestSalary = lowestSalary; }
-        public List<SalaryEntry> getSalaryEntries() { return salaryEntries; }
-        public void setSalaryEntries(List<SalaryEntry> salaryEntries) { this.salaryEntries = salaryEntries; }
-    }
-    
-    /**
-     * Salary entry for comparison
-     */
-    public static class SalaryEntry {
-        private Integer employeeId;
-        private String employeeName;
-        private String position;
-        private BigDecimal basicSalary = BigDecimal.ZERO;
-        private BigDecimal hourlyRate = BigDecimal.ZERO;
-        private BigDecimal averageNetPay = BigDecimal.ZERO;
-        
-        // Getters and setters
-        public Integer getEmployeeId() { return employeeId; }
-        public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
-        public String getEmployeeName() { return employeeName; }
-        public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
-        public String getPosition() { return position; }
-        public void setPosition(String position) { this.position = position; }
-        public BigDecimal getBasicSalary() { return basicSalary; }
-        public void setBasicSalary(BigDecimal basicSalary) { this.basicSalary = basicSalary; }
-        public BigDecimal getHourlyRate() { return hourlyRate; }
-        public void setHourlyRate(BigDecimal hourlyRate) { this.hourlyRate = hourlyRate; }
-        public BigDecimal getAverageNetPay() { return averageNetPay; }
-        public void setAverageNetPay(BigDecimal averageNetPay) { this.averageNetPay = averageNetPay; }
-    }
-    
-    /**
-     * Attendance report
-     */
-    public static class AttendanceReport extends BaseReport {
-        private LocalDate reportDate;
-        private String reportType;
-        private int totalEmployees = 0;
-        private int presentCount = 0;
-        private int lateCount = 0;
-        private int absentCount = 0;
-        private BigDecimal attendanceRate = BigDecimal.ZERO;
-        private List<AttendanceService.DailyAttendanceRecord> attendanceRecords = new ArrayList<>();
-        
-        // Getters and setters
-        public LocalDate getReportDate() { return reportDate; }
-        public void setReportDate(LocalDate reportDate) { this.reportDate = reportDate; }
-        public String getReportType() { return reportType; }
-        public void setReportType(String reportType) { this.reportType = reportType; }
-        public int getTotalEmployees() { return totalEmployees; }
-        public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
-        public int getPresentCount() { return presentCount; }
-        public void setPresentCount(int presentCount) { this.presentCount = presentCount; }
-        public int getLateCount() { return lateCount; }
-        public void setLateCount(int lateCount) { this.lateCount = lateCount; }
-        public int getAbsentCount() { return absentCount; }
-        public void setAbsentCount(int absentCount) { this.absentCount = absentCount; }
-        public BigDecimal getAttendanceRate() { return attendanceRate; }
-        public void setAttendanceRate(BigDecimal attendanceRate) { this.attendanceRate = attendanceRate; }
-        public List<AttendanceService.DailyAttendanceRecord> getAttendanceRecords() { return attendanceRecords; }
-        public void setAttendanceRecords(List<AttendanceService.DailyAttendanceRecord> attendanceRecords) { this.attendanceRecords = attendanceRecords; }
-    }
-    
-    /**
-     * Monthly attendance report
-     */
-    public static class MonthlyAttendanceReport extends BaseReport {
-        private YearMonth yearMonth;
-        private BigDecimal overallAttendanceRate = BigDecimal.ZERO;
-        private List<EmployeeAttendanceSummary> employeeSummaries = new ArrayList<>();
-        
-        // Getters and setters
         public YearMonth getYearMonth() { return yearMonth; }
         public void setYearMonth(YearMonth yearMonth) { this.yearMonth = yearMonth; }
-        public BigDecimal getOverallAttendanceRate() { return overallAttendanceRate; }
-        public void setOverallAttendanceRate(BigDecimal overallAttendanceRate) { this.overallAttendanceRate = overallAttendanceRate; }
-        public List<EmployeeAttendanceSummary> getEmployeeSummaries() { return employeeSummaries; }
-        public void setEmployeeSummaries(List<EmployeeAttendanceSummary> employeeSummaries) { this.employeeSummaries = employeeSummaries; }
+        public LocalDate getGeneratedDate() { return generatedDate; }
+        public void setGeneratedDate(LocalDate generatedDate) { this.generatedDate = generatedDate; }
+        public int getTotalEmployees() { return totalEmployees; }
+        public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
+        public List<PayrollSummaryEntry> getPayrollEntries() { return payrollEntries; }
+        public void setPayrollEntries(List<PayrollSummaryEntry> payrollEntries) { this.payrollEntries = payrollEntries; }
+        public PayrollTotals getTotals() { return totals; }
+        public void setTotals(PayrollTotals totals) { this.totals = totals; }
     }
     
     /**
-     * Employee attendance summary
+     * Individual entry from monthly_payroll_summary_report view
      */
-    public static class EmployeeAttendanceSummary {
+    public static class PayrollSummaryEntry {
         private Integer employeeId;
         private String employeeName;
-        private int totalDays = 0;
-        private int completeDays = 0;
-        private BigDecimal totalHours = BigDecimal.ZERO;
-        private BigDecimal attendanceRate = BigDecimal.ZERO;
-        private int lateInstances = 0;
+        private String position;
+        private String department;
+        private boolean rankAndFile = false;
+        private BigDecimal baseSalary = BigDecimal.ZERO;
+        private BigDecimal leaves = BigDecimal.ZERO;
+        private BigDecimal overtime = BigDecimal.ZERO;
+        private BigDecimal grossIncome = BigDecimal.ZERO;
+        private BigDecimal riceSubsidy = BigDecimal.ZERO;
+        private BigDecimal phoneAllowance = BigDecimal.ZERO;
+        private BigDecimal clothingAllowance = BigDecimal.ZERO;
+        private BigDecimal totalBenefits = BigDecimal.ZERO;
+        private String sssNo;
+        private BigDecimal sssContribution = BigDecimal.ZERO;
+        private String philhealthNo;
+        private BigDecimal philhealthContribution = BigDecimal.ZERO;
+        private String pagibigNo;
+        private BigDecimal pagibigContribution = BigDecimal.ZERO;
+        private String tin;
+        private BigDecimal withholdingTax = BigDecimal.ZERO;
+        private BigDecimal totalDeductions = BigDecimal.ZERO;
+        private BigDecimal netPay = BigDecimal.ZERO;
         
         // Getters and setters
         public Integer getEmployeeId() { return employeeId; }
         public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
         public String getEmployeeName() { return employeeName; }
         public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
-        public int getTotalDays() { return totalDays; }
-        public void setTotalDays(int totalDays) { this.totalDays = totalDays; }
-        public int getCompleteDays() { return completeDays; }
-        public void setCompleteDays(int completeDays) { this.completeDays = completeDays; }
-        public BigDecimal getTotalHours() { return totalHours; }
-        public void setTotalHours(BigDecimal totalHours) { this.totalHours = totalHours; }
-        public BigDecimal getAttendanceRate() { return attendanceRate; }
-        public void setAttendanceRate(BigDecimal attendanceRate) { this.attendanceRate = attendanceRate; }
-        public int getLateInstances() { return lateInstances; }
-        public void setLateInstances(int lateInstances) { this.lateInstances = lateInstances; }
+        public String getPosition() { return position; }
+        public void setPosition(String position) { this.position = position; }
+        public String getDepartment() { return department; }
+        public void setDepartment(String department) { this.department = department; }
+        public boolean isRankAndFile() { return rankAndFile; }
+        public void setRankAndFile(boolean rankAndFile) { this.rankAndFile = rankAndFile; }
+        public BigDecimal getBaseSalary() { return baseSalary; }
+        public void setBaseSalary(BigDecimal baseSalary) { this.baseSalary = baseSalary; }
+        public BigDecimal getLeaves() { return leaves; }
+        public void setLeaves(BigDecimal leaves) { this.leaves = leaves; }
+        public BigDecimal getOvertime() { return overtime; }
+        public void setOvertime(BigDecimal overtime) { this.overtime = overtime; }
+        public BigDecimal getGrossIncome() { return grossIncome; }
+        public void setGrossIncome(BigDecimal grossIncome) { this.grossIncome = grossIncome; }
+        public BigDecimal getRiceSubsidy() { return riceSubsidy; }
+        public void setRiceSubsidy(BigDecimal riceSubsidy) { this.riceSubsidy = riceSubsidy; }
+        public BigDecimal getPhoneAllowance() { return phoneAllowance; }
+        public void setPhoneAllowance(BigDecimal phoneAllowance) { this.phoneAllowance = phoneAllowance; }
+        public BigDecimal getClothingAllowance() { return clothingAllowance; }
+        public void setClothingAllowance(BigDecimal clothingAllowance) { this.clothingAllowance = clothingAllowance; }
+        public BigDecimal getTotalBenefits() { return totalBenefits; }
+        public void setTotalBenefits(BigDecimal totalBenefits) { this.totalBenefits = totalBenefits; }
+        public String getSssNo() { return sssNo; }
+        public void setSssNo(String sssNo) { this.sssNo = sssNo; }
+        public BigDecimal getSssContribution() { return sssContribution; }
+        public void setSssContribution(BigDecimal sssContribution) { this.sssContribution = sssContribution; }
+        public String getPhilhealthNo() { return philhealthNo; }
+        public void setPhilhealthNo(String philhealthNo) { this.philhealthNo = philhealthNo; }
+        public BigDecimal getPhilhealthContribution() { return philhealthContribution; }
+        public void setPhilhealthContribution(BigDecimal philhealthContribution) { this.philhealthContribution = philhealthContribution; }
+        public String getPagibigNo() { return pagibigNo; }
+        public void setPagibigNo(String pagibigNo) { this.pagibigNo = pagibigNo; }
+        public BigDecimal getPagibigContribution() { return pagibigContribution; }
+        public void setPagibigContribution(BigDecimal pagibigContribution) { this.pagibigContribution = pagibigContribution; }
+        public String getTin() { return tin; }
+        public void setTin(String tin) { this.tin = tin; }
+        public BigDecimal getWithholdingTax() { return withholdingTax; }
+        public void setWithholdingTax(BigDecimal withholdingTax) { this.withholdingTax = withholdingTax; }
+        public BigDecimal getTotalDeductions() { return totalDeductions; }
+        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
+        public BigDecimal getNetPay() { return netPay; }
+        public void setNetPay(BigDecimal netPay) { this.netPay = netPay; }
+        
+        public String getEmployeeCategory() {
+            return rankAndFile ? "Rank-and-File" : "Non Rank-and-File";
+        }
     }
     
     /**
-     * Leave report
+     * Payroll totals from the TOTAL row in monthly_payroll_summary_report
      */
-    public static class LeaveReport extends BaseReport {
-        private Integer year;
-        private int totalAllocatedDays = 0;
-        private int totalUsedDays = 0;
-        private BigDecimal overallUsageRate = BigDecimal.ZERO;
-        private List<EmployeeLeaveSummary> leaveSummaries = new ArrayList<>();
+    public static class PayrollTotals {
+        private BigDecimal totalBaseSalary = BigDecimal.ZERO;
+        private BigDecimal totalLeaves = BigDecimal.ZERO;
+        private BigDecimal totalOvertime = BigDecimal.ZERO;
+        private BigDecimal totalGrossIncome = BigDecimal.ZERO;
+        private BigDecimal totalBenefits = BigDecimal.ZERO;
+        private BigDecimal totalDeductions = BigDecimal.ZERO;
+        private BigDecimal totalNetPay = BigDecimal.ZERO;
         
         // Getters and setters
-        public Integer getYear() { return year; }
-        public void setYear(Integer year) { this.year = year; }
-        public int getTotalAllocatedDays() { return totalAllocatedDays; }
-        public void setTotalAllocatedDays(int totalAllocatedDays) { this.totalAllocatedDays = totalAllocatedDays; }
-        public int getTotalUsedDays() { return totalUsedDays; }
-        public void setTotalUsedDays(int totalUsedDays) { this.totalUsedDays = totalUsedDays; }
-        public BigDecimal getOverallUsageRate() { return overallUsageRate; }
-        public void setOverallUsageRate(BigDecimal overallUsageRate) { this.overallUsageRate = overallUsageRate; }
-        public List<EmployeeLeaveSummary> getLeaveSummaries() { return leaveSummaries; }
-        public void setLeaveSummaries(List<EmployeeLeaveSummary> leaveSummaries) { this.leaveSummaries = leaveSummaries; }
+        public BigDecimal getTotalBaseSalary() { return totalBaseSalary; }
+        public void setTotalBaseSalary(BigDecimal totalBaseSalary) { this.totalBaseSalary = totalBaseSalary; }
+        public BigDecimal getTotalLeaves() { return totalLeaves; }
+        public void setTotalLeaves(BigDecimal totalLeaves) { this.totalLeaves = totalLeaves; }
+        public BigDecimal getTotalOvertime() { return totalOvertime; }
+        public void setTotalOvertime(BigDecimal totalOvertime) { this.totalOvertime = totalOvertime; }
+        public BigDecimal getTotalGrossIncome() { return totalGrossIncome; }
+        public void setTotalGrossIncome(BigDecimal totalGrossIncome) { this.totalGrossIncome = totalGrossIncome; }
+        public BigDecimal getTotalBenefits() { return totalBenefits; }
+        public void setTotalBenefits(BigDecimal totalBenefits) { this.totalBenefits = totalBenefits; }
+        public BigDecimal getTotalDeductions() { return totalDeductions; }
+        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
+        public BigDecimal getTotalNetPay() { return totalNetPay; }
+        public void setTotalNetPay(BigDecimal totalNetPay) { this.totalNetPay = totalNetPay; }
     }
     
     /**
-     * Employee leave summary
+     * Employee Payslip Report (from monthly_employee_payslip view)
      */
-    public static class EmployeeLeaveSummary {
+    public static class EmployeePayslipReport {
+        private boolean success = false;
+        private String errorMessage = "";
+        private Integer employeeId;
+        private YearMonth yearMonth;
+        private LocalDate generatedDate;
+        private PayslipDetails payslip;
+        
+        // Getters and setters
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+        public Integer getEmployeeId() { return employeeId; }
+        public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
+        public YearMonth getYearMonth() { return yearMonth; }
+        public void setYearMonth(YearMonth yearMonth) { this.yearMonth = yearMonth; }
+        public LocalDate getGeneratedDate() { return generatedDate; }
+        public void setGeneratedDate(LocalDate generatedDate) { this.generatedDate = generatedDate; }
+        public PayslipDetails getPayslip() { return payslip; }
+        public void setPayslip(PayslipDetails payslip) { this.payslip = payslip; }
+    }
+    
+    /**
+     * Complete payslip details from monthly_employee_payslip view
+     */
+    public static class PayslipDetails {
+        private String payslipNo;
         private Integer employeeId;
         private String employeeName;
-        private int totalAllocatedDays = 0;
-        private int totalUsedDays = 0;
-        private int totalRemainingDays = 0;
-        private BigDecimal usagePercentage = BigDecimal.ZERO;
+        private LocalDate periodStartDate;
+        private LocalDate periodEndDate;
+        private LocalDate payDate;
+        private String employeePosition;
+        private String department;
+        private boolean rankAndFile = false;
+        
+        // Government IDs
+        private String tin;
+        private String sssNo;
+        private String pagibigNo;
+        private String philhealthNo;
+        
+        // Salary Information
+        private BigDecimal monthlyRate = BigDecimal.ZERO;
+        private BigDecimal dailyRate = BigDecimal.ZERO;
+        private BigDecimal daysWorked = BigDecimal.ZERO;
+        private BigDecimal leavesTaken = BigDecimal.ZERO;
+        private BigDecimal overtimeHours = BigDecimal.ZERO;
+        private BigDecimal grossIncome = BigDecimal.ZERO;
+        
+        // Benefits
+        private BigDecimal riceSubsidy = BigDecimal.ZERO;
+        private BigDecimal phoneAllowance = BigDecimal.ZERO;
+        private BigDecimal clothingAllowance = BigDecimal.ZERO;
+        private BigDecimal totalBenefits = BigDecimal.ZERO;
+        
+        // Deductions
+        private BigDecimal socialSecuritySystem = BigDecimal.ZERO;
+        private BigDecimal philhealth = BigDecimal.ZERO;
+        private BigDecimal pagIbig = BigDecimal.ZERO;
+        private BigDecimal withholdingTax = BigDecimal.ZERO;
+        private BigDecimal totalDeductions = BigDecimal.ZERO;
+        
+        // Summary
+        private BigDecimal grossIncomeSummary = BigDecimal.ZERO;
+        private BigDecimal totalBenefitsSummary = BigDecimal.ZERO;
+        private BigDecimal totalDeductionsSummary = BigDecimal.ZERO;
+        private BigDecimal netPay = BigDecimal.ZERO;
         
         // Getters and setters
+        public String getPayslipNo() { return payslipNo; }
+        public void setPayslipNo(String payslipNo) { this.payslipNo = payslipNo; }
         public Integer getEmployeeId() { return employeeId; }
         public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
         public String getEmployeeName() { return employeeName; }
         public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
-        public int getTotalAllocatedDays() { return totalAllocatedDays; }
-        public void setTotalAllocatedDays(int totalAllocatedDays) { this.totalAllocatedDays = totalAllocatedDays; }
-        public int getTotalUsedDays() { return totalUsedDays; }
-        public void setTotalUsedDays(int totalUsedDays) { this.totalUsedDays = totalUsedDays; }
-        public int getTotalRemainingDays() { return totalRemainingDays; }
-        public void setTotalRemainingDays(int totalRemainingDays) { this.totalRemainingDays = totalRemainingDays; }
-        public BigDecimal getUsagePercentage() { return usagePercentage; }
-        public void setUsagePercentage(BigDecimal usagePercentage) { this.usagePercentage = usagePercentage; }
+        public LocalDate getPeriodStartDate() { return periodStartDate; }
+        public void setPeriodStartDate(LocalDate periodStartDate) { this.periodStartDate = periodStartDate; }
+        public LocalDate getPeriodEndDate() { return periodEndDate; }
+        public void setPeriodEndDate(LocalDate periodEndDate) { this.periodEndDate = periodEndDate; }
+        public LocalDate getPayDate() { return payDate; }
+        public void setPayDate(LocalDate payDate) { this.payDate = payDate; }
+        public String getEmployeePosition() { return employeePosition; }
+        public void setEmployeePosition(String employeePosition) { this.employeePosition = employeePosition; }
+        public String getDepartment() { return department; }
+        public void setDepartment(String department) { this.department = department; }
+        public boolean isRankAndFile() { return rankAndFile; }
+        public void setRankAndFile(boolean rankAndFile) { this.rankAndFile = rankAndFile; }
+        public String getTin() { return tin; }
+        public void setTin(String tin) { this.tin = tin; }
+        public String getSssNo() { return sssNo; }
+        public void setSssNo(String sssNo) { this.sssNo = sssNo; }
+        public String getPagibigNo() { return pagibigNo; }
+        public void setPagibigNo(String pagibigNo) { this.pagibigNo = pagibigNo; }
+        public String getPhilhealthNo() { return philhealthNo; }
+        public void setPhilhealthNo(String philhealthNo) { this.philhealthNo = philhealthNo; }
+        public BigDecimal getMonthlyRate() { return monthlyRate; }
+        public void setMonthlyRate(BigDecimal monthlyRate) { this.monthlyRate = monthlyRate; }
+        public BigDecimal getDailyRate() { return dailyRate; }
+        public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+        public BigDecimal getDaysWorked() { return daysWorked; }
+        public void setDaysWorked(BigDecimal daysWorked) { this.daysWorked = daysWorked; }
+        public BigDecimal getLeavesTaken() { return leavesTaken; }
+        public void setLeavesTaken(BigDecimal leavesTaken) { this.leavesTaken = leavesTaken; }
+        public BigDecimal getOvertimeHours() { return overtimeHours; }
+        public void setOvertimeHours(BigDecimal overtimeHours) { this.overtimeHours = overtimeHours; }
+        public BigDecimal getGrossIncome() { return grossIncome; }
+        public void setGrossIncome(BigDecimal grossIncome) { this.grossIncome = grossIncome; }
+        public BigDecimal getRiceSubsidy() { return riceSubsidy; }
+        public void setRiceSubsidy(BigDecimal riceSubsidy) { this.riceSubsidy = riceSubsidy; }
+        public BigDecimal getPhoneAllowance() { return phoneAllowance; }
+        public void setPhoneAllowance(BigDecimal phoneAllowance) { this.phoneAllowance = phoneAllowance; }
+        public BigDecimal getClothingAllowance() { return clothingAllowance; }
+        public void setClothingAllowance(BigDecimal clothingAllowance) { this.clothingAllowance = clothingAllowance; }
+        public BigDecimal getTotalBenefits() { return totalBenefits; }
+        public void setTotalBenefits(BigDecimal totalBenefits) { this.totalBenefits = totalBenefits; }
+        public BigDecimal getSocialSecuritySystem() { return socialSecuritySystem; }
+        public void setSocialSecuritySystem(BigDecimal socialSecuritySystem) { this.socialSecuritySystem = socialSecuritySystem; }
+        public BigDecimal getPhilhealth() { return philhealth; }
+        public void setPhilhealth(BigDecimal philhealth) { this.philhealth = philhealth; }
+        public BigDecimal getPagIbig() { return pagIbig; }
+        public void setPagIbig(BigDecimal pagIbig) { this.pagIbig = pagIbig; }
+        public BigDecimal getWithholdingTax() { return withholdingTax; }
+        public void setWithholdingTax(BigDecimal withholdingTax) { this.withholdingTax = withholdingTax; }
+        public BigDecimal getTotalDeductions() { return totalDeductions; }
+        public void setTotalDeductions(BigDecimal totalDeductions) { this.totalDeductions = totalDeductions; }
+        public BigDecimal getGrossIncomeSummary() { return grossIncomeSummary; }
+        public void setGrossIncomeSummary(BigDecimal grossIncomeSummary) { this.grossIncomeSummary = grossIncomeSummary; }
+        public BigDecimal getTotalBenefitsSummary() { return totalBenefitsSummary; }
+        public void setTotalBenefitsSummary(BigDecimal totalBenefitsSummary) { this.totalBenefitsSummary = totalBenefitsSummary; }
+        public BigDecimal getTotalDeductionsSummary() { return totalDeductionsSummary; }
+        public void setTotalDeductionsSummary(BigDecimal totalDeductionsSummary) { this.totalDeductionsSummary = totalDeductionsSummary; }
+        public BigDecimal getNetPay() { return netPay; }
+        public void setNetPay(BigDecimal netPay) { this.netPay = netPay; }
+        
+        public String getEmployeeCategory() {
+            return rankAndFile ? "Rank-and-File (Overtime Eligible)" : "Non Rank-and-File";
+        }
+        
+        public String getOvertimeInfo() {
+            if (rankAndFile && overtimeHours.compareTo(BigDecimal.ZERO) > 0) {
+                return String.format("%.2f hours at 1.25x rate", overtimeHours);
+            } else if (rankAndFile) {
+                return "No overtime (eligible for 1.25x rate)";
+            } else {
+                return "Not eligible for overtime";
+            }
+        }
     }
     
     /**
-     * Overtime report
+     * Rank-and-File Overtime Report
      */
-    public static class OvertimeReport extends BaseReport {
-        private LocalDate startDate;
-        private LocalDate endDate;
+    public static class RankAndFileOvertimeReport {
+        private boolean success = false;
+        private String errorMessage = "";
+        private YearMonth yearMonth;
+        private LocalDate generatedDate;
         private BigDecimal totalOvertimeHours = BigDecimal.ZERO;
         private BigDecimal totalOvertimePay = BigDecimal.ZERO;
-        private int totalEmployeesWithOvertime = 0;
+        private int totalRankAndFileEmployeesWithOvertime = 0;
         private BigDecimal averageOvertimeHoursPerEmployee = BigDecimal.ZERO;
-        private List<OvertimeService.OvertimeRanking> overtimeRankings = new ArrayList<>();
+        private List<OvertimeEntry> overtimeEntries = new ArrayList<>();
         
         // Getters and setters
-        public LocalDate getStartDate() { return startDate; }
-        public void setStartDate(LocalDate startDate) { this.startDate = startDate; }
-        public LocalDate getEndDate() { return endDate; }
-        public void setEndDate(LocalDate endDate) { this.endDate = endDate; }
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+        public YearMonth getYearMonth() { return yearMonth; }
+        public void setYearMonth(YearMonth yearMonth) { this.yearMonth = yearMonth; }
+        public LocalDate getGeneratedDate() { return generatedDate; }
+        public void setGeneratedDate(LocalDate generatedDate) { this.generatedDate = generatedDate; }
         public BigDecimal getTotalOvertimeHours() { return totalOvertimeHours; }
         public void setTotalOvertimeHours(BigDecimal totalOvertimeHours) { this.totalOvertimeHours = totalOvertimeHours; }
         public BigDecimal getTotalOvertimePay() { return totalOvertimePay; }
         public void setTotalOvertimePay(BigDecimal totalOvertimePay) { this.totalOvertimePay = totalOvertimePay; }
-        public int getTotalEmployeesWithOvertime() { return totalEmployeesWithOvertime; }
-        public void setTotalEmployeesWithOvertime(int totalEmployeesWithOvertime) { this.totalEmployeesWithOvertime = totalEmployeesWithOvertime; }
+        public int getTotalRankAndFileEmployeesWithOvertime() { return totalRankAndFileEmployeesWithOvertime; }
+        public void setTotalRankAndFileEmployeesWithOvertime(int totalRankAndFileEmployeesWithOvertime) { this.totalRankAndFileEmployeesWithOvertime = totalRankAndFileEmployeesWithOvertime; }
         public BigDecimal getAverageOvertimeHoursPerEmployee() { return averageOvertimeHoursPerEmployee; }
         public void setAverageOvertimeHoursPerEmployee(BigDecimal averageOvertimeHoursPerEmployee) { this.averageOvertimeHoursPerEmployee = averageOvertimeHoursPerEmployee; }
-        public List<OvertimeService.OvertimeRanking> getOvertimeRankings() { return overtimeRankings; }
-        public void setOvertimeRankings(List<OvertimeService.OvertimeRanking> overtimeRankings) { this.overtimeRankings = overtimeRankings; }
+        public List<OvertimeEntry> getOvertimeEntries() { return overtimeEntries; }
+        public void setOvertimeEntries(List<OvertimeEntry> overtimeEntries) { this.overtimeEntries = overtimeEntries; }
     }
     
     /**
-     * Compliance report for government contributions
+     * Individual overtime entry for rank-and-file employees
      */
-    public static class ComplianceReport extends BaseReport {
+    public static class OvertimeEntry {
+        private Integer employeeId;
+        private String employeeName;
+        private String department;
+        private BigDecimal overtimeHours = BigDecimal.ZERO;
+        private BigDecimal dailyRate = BigDecimal.ZERO;
+        private BigDecimal overtimePay = BigDecimal.ZERO;
+        private boolean rankAndFile = true;
+        
+        // Getters and setters
+        public Integer getEmployeeId() { return employeeId; }
+        public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
+        public String getEmployeeName() { return employeeName; }
+        public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
+        public String getDepartment() { return department; }
+        public void setDepartment(String department) { this.department = department; }
+        public BigDecimal getOvertimeHours() { return overtimeHours; }
+        public void setOvertimeHours(BigDecimal overtimeHours) { this.overtimeHours = overtimeHours; }
+        public BigDecimal getDailyRate() { return dailyRate; }
+        public void setDailyRate(BigDecimal dailyRate) { this.dailyRate = dailyRate; }
+        public BigDecimal getOvertimePay() { return overtimePay; }
+        public void setOvertimePay(BigDecimal overtimePay) { this.overtimePay = overtimePay; }
+        public boolean isRankAndFile() { return rankAndFile; }
+        public void setRankAndFile(boolean rankAndFile) { this.rankAndFile = rankAndFile; }
+        
+        public String getOvertimeMultiplier() {
+            return rankAndFile ? "1.25x (Rank-and-File Rate)" : "N/A";
+        }
+    }
+    
+    /**
+     * Government Compliance Report
+     */
+    public static class GovernmentComplianceReport {
+        private boolean success = false;
+        private String errorMessage = "";
         private YearMonth yearMonth;
+        private LocalDate generatedDate;
         private int totalEmployees = 0;
         private BigDecimal totalSSS = BigDecimal.ZERO;
         private BigDecimal totalPhilHealth = BigDecimal.ZERO;
@@ -843,8 +849,14 @@ public class ReportService {
         private BigDecimal totalWithholdingTax = BigDecimal.ZERO;
         
         // Getters and setters
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
         public YearMonth getYearMonth() { return yearMonth; }
         public void setYearMonth(YearMonth yearMonth) { this.yearMonth = yearMonth; }
+        public LocalDate getGeneratedDate() { return generatedDate; }
+        public void setGeneratedDate(LocalDate generatedDate) { this.generatedDate = generatedDate; }
         public int getTotalEmployees() { return totalEmployees; }
         public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
         public BigDecimal getTotalSSS() { return totalSSS; }
@@ -859,5 +871,46 @@ public class ReportService {
         public BigDecimal getTotalGovernmentContributions() {
             return totalSSS.add(totalPhilHealth).add(totalPagIbig).add(totalWithholdingTax);
         }
+    }
+    
+    /**
+     * Attendance report (keeping existing structure)
+     */
+    public static class AttendanceReport {
+        private boolean success = false;
+        private String errorMessage = "";
+        private LocalDate reportDate;
+        private LocalDate generatedDate;
+        private String reportType;
+        private int totalEmployees = 0;
+        private int presentCount = 0;
+        private int lateCount = 0;
+        private int absentCount = 0;
+        private BigDecimal attendanceRate = BigDecimal.ZERO;
+        private List<AttendanceService.DailyAttendanceRecord> attendanceRecords = new ArrayList<>();
+        
+        // Getters and setters
+        public boolean isSuccess() { return success; }
+        public void setSuccess(boolean success) { this.success = success; }
+        public String getErrorMessage() { return errorMessage; }
+        public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+        public LocalDate getReportDate() { return reportDate; }
+        public void setReportDate(LocalDate reportDate) { this.reportDate = reportDate; }
+        public LocalDate getGeneratedDate() { return generatedDate; }
+        public void setGeneratedDate(LocalDate generatedDate) { this.generatedDate = generatedDate; }
+        public String getReportType() { return reportType; }
+        public void setReportType(String reportType) { this.reportType = reportType; }
+        public int getTotalEmployees() { return totalEmployees; }
+        public void setTotalEmployees(int totalEmployees) { this.totalEmployees = totalEmployees; }
+        public int getPresentCount() { return presentCount; }
+        public void setPresentCount(int presentCount) { this.presentCount = presentCount; }
+        public int getLateCount() { return lateCount; }
+        public void setLateCount(int lateCount) { this.lateCount = lateCount; }
+        public int getAbsentCount() { return absentCount; }
+        public void setAbsentCount(int absentCount) { this.absentCount = absentCount; }
+        public BigDecimal getAttendanceRate() { return attendanceRate; }
+        public void setAttendanceRate(BigDecimal attendanceRate) { this.attendanceRate = attendanceRate; }
+        public List<AttendanceService.DailyAttendanceRecord> getAttendanceRecords() { return attendanceRecords; }
+        public void setAttendanceRecords(List<AttendanceService.DailyAttendanceRecord> attendanceRecords) { this.attendanceRecords = attendanceRecords; }
     }
 }
