@@ -277,7 +277,7 @@ public class AccountingModel extends EmployeeModel {
 
         // Call the actual ReportService method and wrap result in ReportResult
         try {
-            Object reportServiceResult = reportService.generatePayrollReport(payPeriodId);
+            Object reportServiceResult = reportService.generateMonthlyPayrollSummaryFromView(YearMonth.now());
             ReportResult report = new ReportResult();
             report.setSuccess(true);
             report.setReportContent("Financial report generated for period: " + payPeriodId);
@@ -313,7 +313,7 @@ public class AccountingModel extends EmployeeModel {
         }
 
         try {
-            Object reportServiceResult = reportService.generateComplianceReport(yearMonth);
+            Object reportServiceResult = reportService.generateGovernmentComplianceFromView(yearMonth);
             ReportResult report = new ReportResult();
             report.setSuccess(true);
             report.setReportContent("Tax compliance report generated for: " + yearMonth);
@@ -349,7 +349,8 @@ public class AccountingModel extends EmployeeModel {
         }
 
         try {
-            Object reportServiceResult = reportService.generateSalaryComparisonReport(startDate, endDate);
+            YearMonth currentMonth = YearMonth.from(startDate);
+Object reportServiceResult = reportService.generateMonthlyPayrollSummaryFromView(currentMonth);
             ReportResult report = new ReportResult();
             report.setSuccess(true);
             report.setReportContent("Salary comparison report generated for period: " + startDate + " to " + endDate);
