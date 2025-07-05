@@ -14,6 +14,7 @@ import java.time.ZonedDateTime;
 import java.sql.Date;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Objects;
 
 /**
  * Enhanced OvertimeService - Rank-and-file overtime business logic
@@ -315,7 +316,7 @@ public class OvertimeService {
             List<OvertimeRequestModel> overtimeRequests = overtimeDAO.findByDateRange(startDateTime, endDateTime);
 
             return overtimeRequests.stream()
-                    .filter(req -> req.getEmployeeId() != null && req.getEmployeeId().equals(employeeId))
+                    .filter(req -> Objects.equals(req.getEmployeeId(), employeeId))
                     .filter(OvertimeRequestModel::isApproved)
                     .map(req -> BigDecimal.valueOf(req.getOvertimeHours()))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -392,7 +393,8 @@ public class OvertimeService {
         try {
             LocalDate overtimeDate = overtimeStart.toLocalDate();
             AttendanceModel attendance = attendanceDAO.getAttendanceByEmployeeAndDate(employeeId, Date.valueOf(overtimeDate));
-            if (attendance == null || !attendance.isCompleteAttendance()) {
+            // FIXED: Check if attendance exists and has both time in and time out
+            if (attendance == null || attendance.getTimeIn() == null || attendance.getTimeOut() == null) {
                 result.setValid(false);
                 result.setErrorMessage("Employee must have complete regular attendance before requesting overtime");
                 return result;
@@ -504,7 +506,7 @@ public class OvertimeService {
 
             List<OvertimeRequestModel> monthlyRequests = overtimeDAO.findByDateRange(startOfMonth, endOfMonth)
                     .stream()
-                    .filter(req -> req.getEmployeeId().equals(employeeId))
+                    .filter(req -> Objects.equals(req.getEmployeeId(), employeeId))
                     .toList();
 
             summary.setOvertimeRequests(monthlyRequests);
