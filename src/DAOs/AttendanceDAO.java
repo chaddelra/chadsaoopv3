@@ -533,6 +533,37 @@ public class AttendanceDAO {
         
         return false;
     }
+    /**
+ * Get attendance records for all employees on a specific date
+ * Used by AttendanceService for daily attendance reports
+ * @param date Date to get attendance for
+ * @return List of attendance records for all employees on that date
+ */
+public List<AttendanceModel> getAttendanceByDate(Date date) {
+    List<AttendanceModel> attendanceList = new ArrayList<>();
+    String sql = "SELECT attendanceId, date, timeIn, timeOut, employeeId FROM attendance " +
+                 "WHERE date = ? ORDER BY employeeId";
+    
+    try (Connection conn = getConnection();  // Use your existing getConnection() method
+         PreparedStatement stmt = conn.prepareStatement(sql)) {
+        
+        stmt.setDate(1, convertToManilaDate(date));
+        
+        try (ResultSet rs = stmt.executeQuery()) {
+            while (rs.next()) {
+                AttendanceModel attendance = mapResultSetToAttendance(rs);
+                if (attendance != null) {
+                    attendanceList.add(attendance);
+                }
+            }
+        }
+        
+    } catch (SQLException e) {
+        System.err.println("Error getting attendance by date: " + e.getMessage());
+    }
+    
+    return attendanceList;
+}
     
     // Helper methods
     

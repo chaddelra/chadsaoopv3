@@ -5,6 +5,8 @@ import Models.TardinessRecordModel;
 import DAOs.AttendanceDAO;
 import DAOs.TardinessRecordDAO;
 import DAOs.EmployeeDAO;
+import java.time.YearMonth;
+import java.math.BigDecimal;
 
 import java.sql.Date;
 import java.sql.Time;
@@ -625,4 +627,196 @@ public class AttendanceService {
             return 0.0;
         }
     }
+        /**
+ * Get daily attendance report for all employees on a specific date
+ * @param date Date to generate report for
+ * @return List of daily attendance records
+ */
+public List<DailyAttendanceRecord> getDailyAttendanceReport(LocalDate date) {
+    List<DailyAttendanceRecord> dailyRecords = new ArrayList<>();
+    
+    try {
+        Date sqlDate = Date.valueOf(date);
+        
+        // Get all employees (you may need to inject EmployeeDAO or get this from somewhere)
+        // For now, we'll get attendance records and build from there
+        List<AttendanceModel> attendanceList = attendanceDAO.getAttendanceByDate(sqlDate);
+        
+        for (AttendanceModel attendance : attendanceList) {
+            DailyAttendanceRecord record = new DailyAttendanceRecord();
+            record.setEmployeeId(attendance.getEmployeeId());
+            record.setDate(date);
+            record.setTimeIn(attendance.getFormattedTimeIn());
+            record.setTimeOut(attendance.getFormattedTimeOut());
+            record.setComputedHours(BigDecimal.valueOf(attendance.getComputedHours()));
+            
+            // Determine status based on attendance
+            if (attendance.isCompleteAttendance()) {
+                if (attendance.isLateAttendance()) {
+                    record.setStatus("Late");
+                } else {
+                    record.setStatus("Present");
+                }
+            } else if (attendance.hasTimeIn()) {
+                record.setStatus("Incomplete");
+            } else {
+                record.setStatus("Absent");
+            }
+            
+            record.setLateHours(BigDecimal.valueOf(attendance.getLateHours()));
+            record.setOvertimeHours(BigDecimal.valueOf(attendance.getOvertimeHours()));
+            
+            dailyRecords.add(record);
+        }
+        
+    } catch (Exception e) {
+        System.err.println("Error generating daily attendance report: " + e.getMessage());
+    }
+    
+    return dailyRecords;
+}
+
+/**
+ * Get monthly attendance summary for a specific employee
+ * @param employeeId Employee ID
+ * @param yearMonth Year and month
+ * @return Attendance summary for the month
+ */
+public AttendanceSummary getMonthlyAttendanceSummary(Integer employeeId, YearMonth yearMonth) {
+    AttendanceSummary summary = new AttendanceSummary();
+    
+    try {
+        Date startDate = Date.valueOf(yearMonth.atDay(1));
+        Date endDate = Date.valueOf(yearMonth.atEndOfMonth());
+        
+        List<AttendanceModel> monthlyAttendance = getAttendanceByEmployeeAndDateRange(
+            employeeId, startDate, endDate);
+        
+        int totalDays = 0;
+        int completeDays = 0;
+        int lateInstances = 0;
+        BigDecimal totalHours = BigDecimal.ZERO;
+        
+        for (AttendanceModel attendance : monthlyAttendance) {
+            totalDays++;
+            
+            if (attendance.isCompleteAttendance()) {
+                completeDays++;
+                totalHours = totalHours.add(BigDecimal.valueOf(attendance.getComputedHours()));
+            }
+            
+            if (attendance.isLateAttendance()) {
+                lateInstances++;
+            }
+        }
+        
+        // Calculate attendance rate
+        BigDecimal attendanceRate = totalDays > 0 ? 
+            BigDecimal.valueOf(completeDays).divide(BigDecimal.valueOf(totalDays), 4, java.math.RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100)) : BigDecimal.ZERO;
+        
+        summary.setEmployeeId(employeeId);
+        summary.setYearMonth(yearMonth);
+        summary.setTotalDays(totalDays);
+        summary.setCompleteDays(completeDays);
+        summary.setTotalHours(totalHours);
+        summary.setAttendanceRate(attendanceRate);
+        summary.setLateInstances(lateInstances);
+        
+    } catch (Exception e) {
+        System.err.println("Error getting monthly attendance summary: " + e.getMessage());
+    }
+    
+    return summary;
+}
+
+// ADD THESE INNER CLASSES TO YOUR AttendanceService.java
+
+/**
+ * Daily attendance record for reporting
+ */
+public static class DailyAttendanceRecord {
+    private Integer employeeId;
+    private String employeeName;
+    private LocalDate date;
+    private String timeIn;
+    private String timeOut;
+    private BigDecimal computedHours = BigDecimal.ZERO;
+    private String status; // Present, Late, Absent, Incomplete
+    private BigDecimal lateHours = BigDecimal.ZERO;
+    private BigDecimal overtimeHours = BigDecimal.ZERO;
+    
+    // Getters and setters
+    public Integer getEmployeeId() { return employeeId; }
+    public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
+    
+    public String getEmployeeName() { return employeeName; }
+    public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
+    
+    public LocalDate getDate() { return date; }
+    public void setDate(LocalDate date) { this.date = date; }
+    
+    public String getTimeIn() { return timeIn; }
+    public void setTimeIn(String timeIn) { this.timeIn = timeIn; }
+    
+    public String getTimeOut() { return timeOut; }
+    public void setTimeOut(String timeOut) { this.timeOut = timeOut; }
+    
+    public BigDecimal getComputedHours() { return computedHours; }
+    public void setComputedHours(BigDecimal computedHours) { 
+        this.computedHours = computedHours != null ? computedHours : BigDecimal.ZERO; 
+    }
+    
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+    
+    public BigDecimal getLateHours() { return lateHours; }
+    public void setLateHours(BigDecimal lateHours) { 
+        this.lateHours = lateHours != null ? lateHours : BigDecimal.ZERO; 
+    }
+    
+    public BigDecimal getOvertimeHours() { return overtimeHours; }
+    public void setOvertimeHours(BigDecimal overtimeHours) { 
+        this.overtimeHours = overtimeHours != null ? overtimeHours : BigDecimal.ZERO; 
+    }
+}
+
+/**
+ * Monthly attendance summary
+ */
+public static class AttendanceSummary {
+    private Integer employeeId;
+    private YearMonth yearMonth;
+    private int totalDays = 0;
+    private int completeDays = 0;
+    private BigDecimal totalHours = BigDecimal.ZERO;
+    private BigDecimal attendanceRate = BigDecimal.ZERO;
+    private int lateInstances = 0;
+    
+    // Getters and setters
+    public Integer getEmployeeId() { return employeeId; }
+    public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
+    
+    public YearMonth getYearMonth() { return yearMonth; }
+    public void setYearMonth(YearMonth yearMonth) { this.yearMonth = yearMonth; }
+    
+    public int getTotalDays() { return totalDays; }
+    public void setTotalDays(int totalDays) { this.totalDays = totalDays; }
+    
+    public int getCompleteDays() { return completeDays; }
+    public void setCompleteDays(int completeDays) { this.completeDays = completeDays; }
+    
+    public BigDecimal getTotalHours() { return totalHours; }
+    public void setTotalHours(BigDecimal totalHours) { 
+        this.totalHours = totalHours != null ? totalHours : BigDecimal.ZERO; 
+    }
+    
+    public BigDecimal getAttendanceRate() { return attendanceRate; }
+    public void setAttendanceRate(BigDecimal attendanceRate) { 
+        this.attendanceRate = attendanceRate != null ? attendanceRate : BigDecimal.ZERO; 
+    }
+    
+    public int getLateInstances() { return lateInstances; }
+    public void setLateInstances(int lateInstances) { this.lateInstances = lateInstances; }
+}
 }

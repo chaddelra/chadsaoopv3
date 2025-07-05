@@ -6,6 +6,9 @@ import Models.AttendanceModel;
 import DAOs.LeaveRequestDAO;
 import DAOs.LeaveBalanceDAO;
 import DAOs.AttendanceDAO;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import DAOs.DatabaseConnection;
 
 import java.sql.Date;
 import java.time.*;
@@ -27,6 +30,16 @@ public class LeaveService {
         this.leaveBalanceDAO = new LeaveBalanceDAO();
         this.attendanceDAO = new AttendanceDAO();
     }
+    
+    /**
+ * Constructor with DatabaseConnection (needed by ReportService)
+ * @param databaseConnection Database connection
+ */
+public LeaveService(DatabaseConnection databaseConnection) {
+    this.leaveRequestDAO = new LeaveRequestDAO(databaseConnection);
+    this.leaveBalanceDAO = new LeaveBalanceDAO(databaseConnection);
+    this.attendanceDAO = new AttendanceDAO(databaseConnection);
+}
     
     public LeaveService(LeaveRequestDAO leaveRequestDAO, LeaveBalanceDAO leaveBalanceDAO, 
                        AttendanceDAO attendanceDAO) {
@@ -89,7 +102,81 @@ public class LeaveService {
             return false;
         }
     }
+    /**
+ * Get employee leave summary for a specific year
+ * @param employeeId Employee ID
+ * @param year Year for the summary
+ * @return Leave summary for the employee
+ */
+public LeaveSummary getEmployeeLeaveSummary(Integer employeeId, Integer year) {
+    LeaveSummary summary = new LeaveSummary();
     
+    try {
+        // Get all leave balances for the employee for the year
+        List<LeaveBalance> balances = leaveBalanceDAO.getLeaveBalancesByEmployee(employeeId, Year.of(year));
+        
+        int totalAllocatedDays = 0;
+        int totalUsedDays = 0;
+        int totalRemainingDays = 0;
+        
+        for (LeaveBalance balance : balances) {
+            totalAllocatedDays += balance.getTotalLeaveDays();
+            totalUsedDays += balance.getUsedLeaveDays();
+            totalRemainingDays += balance.getRemainingLeaveDays();
+        }
+        
+        summary.setEmployeeId(employeeId);
+        summary.setYear(year);
+        summary.setTotalAllocatedDays(totalAllocatedDays);
+        summary.setTotalUsedDays(totalUsedDays);
+        summary.setTotalRemainingDays(totalRemainingDays);
+        
+        // Calculate usage percentage
+        if (totalAllocatedDays > 0) {
+            BigDecimal usagePercentage = new BigDecimal(totalUsedDays)
+                .divide(new BigDecimal(totalAllocatedDays), 4, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal(100));
+            summary.setUsagePercentage(usagePercentage);
+        }
+        
+    } catch (Exception e) {
+        System.err.println("Error getting employee leave summary: " + e.getMessage());
+    }
+    
+    return summary;
+}
+/**
+ * Employee leave summary for reporting
+ */
+public static class LeaveSummary {
+    private Integer employeeId;
+    private Integer year;
+    private int totalAllocatedDays = 0;
+    private int totalUsedDays = 0;
+    private int totalRemainingDays = 0;
+    private BigDecimal usagePercentage = BigDecimal.ZERO;
+    
+    // Getters and setters
+    public Integer getEmployeeId() { return employeeId; }
+    public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
+    
+    public Integer getYear() { return year; }
+    public void setYear(Integer year) { this.year = year; }
+    
+    public int getTotalAllocatedDays() { return totalAllocatedDays; }
+    public void setTotalAllocatedDays(int totalAllocatedDays) { this.totalAllocatedDays = totalAllocatedDays; }
+    
+    public int getTotalUsedDays() { return totalUsedDays; }
+    public void setTotalUsedDays(int totalUsedDays) { this.totalUsedDays = totalUsedDays; }
+    
+    public int getTotalRemainingDays() { return totalRemainingDays; }
+    public void setTotalRemainingDays(int totalRemainingDays) { this.totalRemainingDays = totalRemainingDays; }
+    
+    public BigDecimal getUsagePercentage() { return usagePercentage; }
+    public void setUsagePercentage(BigDecimal usagePercentage) { 
+        this.usagePercentage = usagePercentage != null ? usagePercentage : BigDecimal.ZERO; 
+    }
+}
     /**
      * Approve leave request with enhanced conflict resolution
      * @param requestId Leave request ID
