@@ -9,114 +9,132 @@ import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.sql.Date;
 import java.util.List;
 import java.util.ArrayList;
 
 /**
- * OvertimeService - Business logic for overtime management
- * Handles overtime requests, approvals, calculations, and overtime-related reporting
- * Enhanced with rank-and-file business logic (simplified version)
- * @author User
+ * Enhanced OvertimeService - Rank-and-file overtime business logic
+ * Only rank-and-file employees are eligible for overtime pay (1.25x)
+ * @author chad
  */
 public class OvertimeService {
 
+    // Manila timezone constant
+    public static final ZoneId MANILA_TIMEZONE = ZoneId.of("Asia/Manila");
+    
     // DAO Dependencies
     private final DatabaseConnection databaseConnection;
     private final OvertimeRequestDAO overtimeDAO;
     private final EmployeeDAO employeeDAO;
     private final AttendanceDAO attendanceDAO;
 
-    // Business Rules Configuration
-    private static final BigDecimal OVERTIME_MULTIPLIER = new BigDecimal("1.5"); // Time and a half
-    private static final BigDecimal NIGHT_SHIFT_MULTIPLIER = new BigDecimal("1.10"); // 10% night differential
-    private static final BigDecimal WEEKEND_MULTIPLIER = new BigDecimal("1.30"); // 30% weekend premium
-    private static final int MAX_DAILY_OVERTIME_HOURS = 4; // Maximum 4 hours overtime per day
-    private static final int MAX_WEEKLY_OVERTIME_HOURS = 20; // Maximum 20 hours overtime per week
-    private static final int MIN_OVERTIME_MINUTES = 30; // Minimum 30 minutes to qualify for overtime
+    // Business Rules - Enhanced for rank-and-file
+    private static final BigDecimal RANK_AND_FILE_OVERTIME_MULTIPLIER = new BigDecimal("1.25");
+    private static final BigDecimal NIGHT_SHIFT_MULTIPLIER = new BigDecimal("1.10");
+    private static final BigDecimal WEEKEND_MULTIPLIER = new BigDecimal("1.30");
+    private static final int MAX_DAILY_OVERTIME_HOURS = 4;
+    private static final int MAX_WEEKLY_OVERTIME_HOURS = 20;
+    private static final int MIN_OVERTIME_MINUTES = 30;
 
     /**
-     * Constructor - initializes required DAOs
-     */
-    public OvertimeService() {
-        this.databaseConnection = new DatabaseConnection();
-        this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
-        this.employeeDAO = new EmployeeDAO(databaseConnection);
-        this.attendanceDAO = new AttendanceDAO();
-    }
-
-    /**
-     * Constructor with custom database connection
+     * Constructor with database connection
      */
     public OvertimeService(DatabaseConnection databaseConnection) {
         this.databaseConnection = databaseConnection;
         this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
         this.employeeDAO = new EmployeeDAO(databaseConnection);
-        this.attendanceDAO = new AttendanceDAO();
+        this.attendanceDAO = new AttendanceDAO(databaseConnection);
     }
 
-    // ================================
-    // RANK-AND-FILE BUSINESS LOGIC (Simplified)
-    // ================================
+    /**
+     * Default constructor
+     */
+    public OvertimeService() {
+        this.databaseConnection = new DatabaseConnection();
+        this.overtimeDAO = new OvertimeRequestDAO(databaseConnection);
+        this.employeeDAO = new EmployeeDAO(databaseConnection);
+        this.attendanceDAO = new AttendanceDAO(databaseConnection);
+    }
+
+    // RANK-AND-FILE BUSINESS LOGIC
 
     /**
      * Check if employee is rank-and-file and eligible for overtime
-     * Simplified version - you can enhance this later when you have PositionDAO
-     * @param employeeId Employee ID to check
-     * @return true if employee is eligible for overtime
      */
     public boolean isEligibleForOvertime(Integer employeeId) {
-        // Simplified implementation - assume all employees are eligible for now
-        // TODO: Add proper rank-and-file checking when PositionDAO is implemented
-        // Business logic: Only rank-and-file employees should be eligible for overtime
-        return true;
+        try {
+            return employeeDAO.isEmployeeRankAndFile(employeeId);
+        } catch (Exception e) {
+            System.err.println("Error checking overtime eligibility: " + e.getMessage());
+            return false;
+        }
     }
 
     /**
      * Get overtime eligibility message
-     * @param employeeId Employee ID
-     * @return Eligibility message
      */
     public String getOvertimeEligibilityMessage(Integer employeeId) {
         try {
             EmployeeModel employee = employeeDAO.findById(employeeId);
             if (employee == null) {
-                return "Employee not found";
+                return "❌ Employee not found";
             }
 
-            // Simplified - assume all employees are eligible
-            return "✅ " + employee.getFullName() + " is eligible for overtime";
-
+            boolean isRankAndFile = employeeDAO.isEmployeeRankAndFile(employeeId);
+            
+            if (isRankAndFile) {
+                return "✅ " + employee.getFullName() + " (Rank-and-File) is eligible for overtime pay at 1.25x rate";
+            } else {
+                return "❌ " + employee.getFullName() + " (Non Rank-and-File) is not eligible for overtime pay";
+            }
         } catch (Exception e) {
             return "Error checking eligibility: " + e.getMessage();
         }
     }
 
-    // ================================
-    // OVERTIME REQUEST OPERATIONS
-    // ================================
+    // MANILA TIMEZONE SUPPORT
 
     /**
-     * Submits a new overtime request
-     * @param employeeId Employee requesting overtime
-     * @param overtimeStart Start date/time of overtime
-     * @param overtimeEnd End date/time of overtime
-     * @param reason Reason for overtime
-     * @return OvertimeRequestResult with success status and details
+     * Get current Manila time
+     */
+    public LocalDateTime getCurrentManilaTime() {
+        return ZonedDateTime.now(MANILA_TIMEZONE).toLocalDateTime();
+    }
+
+    /**
+     * Get current Manila date
+     */
+    public LocalDate getCurrentManilaDate() {
+        return ZonedDateTime.now(MANILA_TIMEZONE).toLocalDate();
+    }
+
+    /**
+     * Validate overtime request date
+     */
+    public boolean isValidOvertimeDate(LocalDate overtimeDate) {
+        LocalDate today = getCurrentManilaDate();
+        return !overtimeDate.isBefore(today);
+    }
+
+    // OVERTIME REQUEST OPERATIONS
+
+    /**
+     * Submit overtime request with rank-and-file validation
      */
     public OvertimeRequestResult submitOvertimeRequest(Integer employeeId, LocalDateTime overtimeStart,
                                                        LocalDateTime overtimeEnd, String reason) {
         OvertimeRequestResult result = new OvertimeRequestResult();
 
         try {
-            // Check if employee is eligible for overtime
             if (!isEligibleForOvertime(employeeId)) {
                 result.setSuccess(false);
                 result.setMessage(getOvertimeEligibilityMessage(employeeId));
                 return result;
             }
 
-            // Validate employee exists
             EmployeeModel employee = employeeDAO.findById(employeeId);
             if (employee == null) {
                 result.setSuccess(false);
@@ -124,7 +142,6 @@ public class OvertimeService {
                 return result;
             }
 
-            // Validate overtime request
             OvertimeValidationResult validation = validateOvertimeRequest(employeeId, overtimeStart, overtimeEnd);
             if (!validation.isValid()) {
                 result.setSuccess(false);
@@ -132,8 +149,9 @@ public class OvertimeService {
                 return result;
             }
 
-            // Create overtime request
             OvertimeRequestModel overtimeRequest = new OvertimeRequestModel(employeeId, overtimeStart, overtimeEnd, reason);
+            overtimeRequest.setDateCreated(getCurrentManilaTime());
+            
             boolean success = overtimeDAO.save(overtimeRequest);
 
             if (success) {
@@ -141,11 +159,9 @@ public class OvertimeService {
                 result.setOvertimeRequestId(overtimeRequest.getOvertimeRequestId());
                 result.setMessage("Overtime request submitted successfully for " + employee.getFullName());
                 result.setOvertimeHours(BigDecimal.valueOf(overtimeRequest.getOvertimeHours()));
-                result.setEstimatedPay(calculateOvertimePay(overtimeRequest, employee.getHourlyRate()));
+                result.setEstimatedPay(calculateRankAndFileOvertimePay(overtimeRequest, employee.getHourlyRate()));
 
-                System.out.println("✅ Overtime request submitted: " + employee.getFullName() +
-                        " (" + overtimeStart + " to " + overtimeEnd + ", " +
-                        overtimeRequest.getOvertimeHours() + " hours)");
+                System.out.println("✅ Rank-and-file overtime request submitted: " + employee.getFullName());
             } else {
                 result.setSuccess(false);
                 result.setMessage("Failed to submit overtime request for " + employee.getFullName());
@@ -154,24 +170,18 @@ public class OvertimeService {
         } catch (Exception e) {
             result.setSuccess(false);
             result.setMessage("Error submitting overtime request: " + e.getMessage());
-            System.err.println("❌ Error submitting overtime request for employee " + employeeId + ": " + e.getMessage());
         }
 
         return result;
     }
 
     /**
-     * Approves an overtime request
-     * @param overtimeRequestId Overtime request ID to approve
-     * @param supervisorId ID of supervisor approving
-     * @param supervisorNotes Optional notes from supervisor
-     * @return OvertimeApprovalResult with success status
+     * Approve overtime request
      */
     public OvertimeApprovalResult approveOvertimeRequest(Integer overtimeRequestId, Integer supervisorId, String supervisorNotes) {
         OvertimeApprovalResult result = new OvertimeApprovalResult();
 
         try {
-            // Get overtime request
             OvertimeRequestModel overtimeRequest = overtimeDAO.findById(overtimeRequestId);
             if (overtimeRequest == null) {
                 result.setSuccess(false);
@@ -179,36 +189,28 @@ public class OvertimeService {
                 return result;
             }
 
-            // Validate supervisor exists
-            EmployeeModel supervisor = employeeDAO.findById(supervisorId);
-            if (supervisor == null) {
+            if (!isEligibleForOvertime(overtimeRequest.getEmployeeId())) {
                 result.setSuccess(false);
-                result.setMessage("Supervisor not found: " + supervisorId);
+                result.setMessage("Employee is no longer eligible for overtime (not rank-and-file)");
                 return result;
             }
 
-            // Check if already processed
             if (overtimeRequest.getApprovalStatus() != ApprovalStatus.PENDING) {
                 result.setSuccess(false);
                 result.setMessage("Overtime request has already been " + overtimeRequest.getApprovalStatus().getValue().toLowerCase());
                 return result;
             }
 
-            // Approve the request
             boolean success = overtimeDAO.approveOvertime(overtimeRequestId, supervisorNotes);
 
             if (success) {
                 result.setSuccess(true);
                 result.setMessage("Overtime request approved successfully");
 
-                // Calculate final pay
                 EmployeeModel employee = employeeDAO.findById(overtimeRequest.getEmployeeId());
                 if (employee != null) {
-                    BigDecimal overtimePay = calculateOvertimePay(overtimeRequest, employee.getHourlyRate());
+                    BigDecimal overtimePay = calculateRankAndFileOvertimePay(overtimeRequest, employee.getHourlyRate());
                     result.setOvertimePay(overtimePay);
-
-                    System.out.println("✅ Overtime request approved: " + employee.getFullName() +
-                            " by " + supervisor.getFullName() + " (Pay: ₱" + overtimePay + ")");
                 }
             } else {
                 result.setSuccess(false);
@@ -218,31 +220,24 @@ public class OvertimeService {
         } catch (Exception e) {
             result.setSuccess(false);
             result.setMessage("Error approving overtime request: " + e.getMessage());
-            System.err.println("❌ Error approving overtime request " + overtimeRequestId + ": " + e.getMessage());
         }
 
         return result;
     }
 
     /**
-     * Rejects an overtime request
-     * @param overtimeRequestId Overtime request ID to reject
-     * @param supervisorId ID of supervisor rejecting
-     * @param supervisorNotes Required notes explaining rejection
-     * @return OvertimeApprovalResult with success status
+     * Reject overtime request
      */
     public OvertimeApprovalResult rejectOvertimeRequest(Integer overtimeRequestId, Integer supervisorId, String supervisorNotes) {
         OvertimeApprovalResult result = new OvertimeApprovalResult();
 
         try {
-            // Validate supervisor notes are provided for rejection
             if (supervisorNotes == null || supervisorNotes.trim().isEmpty()) {
                 result.setSuccess(false);
                 result.setMessage("Supervisor notes are required when rejecting an overtime request");
                 return result;
             }
 
-            // Get overtime request
             OvertimeRequestModel overtimeRequest = overtimeDAO.findById(overtimeRequestId);
             if (overtimeRequest == null) {
                 result.setSuccess(false);
@@ -250,26 +245,17 @@ public class OvertimeService {
                 return result;
             }
 
-            // Check if already processed
-           if (overtimeRequest.getApprovalStatus() != ApprovalStatus.PENDING) {
+            if (overtimeRequest.getApprovalStatus() != ApprovalStatus.PENDING) {
                 result.setSuccess(false);
                 result.setMessage("Overtime request has already been " + overtimeRequest.getApprovalStatus().getValue().toLowerCase());
                 return result;
             }
 
-            // Reject the request
             boolean success = overtimeDAO.rejectOvertime(overtimeRequestId, supervisorNotes);
 
             if (success) {
                 result.setSuccess(true);
                 result.setMessage("Overtime request rejected successfully");
-
-                EmployeeModel employee = employeeDAO.findById(overtimeRequest.getEmployeeId());
-                EmployeeModel supervisor = employeeDAO.findById(supervisorId);
-
-                System.out.println("❌ Overtime request rejected: " +
-                        (employee != null ? employee.getFullName() : "Employee " + overtimeRequest.getEmployeeId()) +
-                        " by " + (supervisor != null ? supervisor.getFullName() : "Supervisor " + supervisorId));
             } else {
                 result.setSuccess(false);
                 result.setMessage("Failed to reject overtime request");
@@ -278,52 +264,51 @@ public class OvertimeService {
         } catch (Exception e) {
             result.setSuccess(false);
             result.setMessage("Error rejecting overtime request: " + e.getMessage());
-            System.err.println("❌ Error rejecting overtime request " + overtimeRequestId + ": " + e.getMessage());
         }
 
         return result;
     }
 
-    // ================================
-    // OVERTIME CALCULATIONS
-    // ================================
+    // RANK-AND-FILE OVERTIME CALCULATIONS
 
     /**
-     * Calculates overtime pay for a specific overtime request
-     * @param overtimeRequest The overtime request
-     * @param hourlyRate Employee's hourly rate
-     * @return Calculated overtime pay
+     * Calculate rank-and-file overtime pay (1.25x rate)
      */
-    public BigDecimal calculateOvertimePay(OvertimeRequestModel overtimeRequest, BigDecimal hourlyRate) {
+    public BigDecimal calculateRankAndFileOvertimePay(OvertimeRequestModel overtimeRequest, BigDecimal hourlyRate) {
         if (hourlyRate == null || BigDecimal.valueOf(overtimeRequest.getOvertimeHours()).equals(BigDecimal.ZERO)) {
             return BigDecimal.ZERO;
         }
 
         BigDecimal overtimeHours = BigDecimal.valueOf(overtimeRequest.getOvertimeHours());
-        BigDecimal multiplier = OVERTIME_MULTIPLIER; // Start with base overtime rate
+        BigDecimal multiplier = RANK_AND_FILE_OVERTIME_MULTIPLIER;
 
-        // Apply night shift differential if applicable
         if (isNightShift(overtimeRequest.getOvertimeStart())) {
-            multiplier = multiplier.add(NIGHT_SHIFT_MULTIPLIER.subtract(BigDecimal.ONE)); // Add night differential
+            multiplier = multiplier.add(NIGHT_SHIFT_MULTIPLIER.subtract(BigDecimal.ONE));
         }
 
-        // Apply weekend premium if applicable
         if (isWeekend(overtimeRequest.getOvertimeStart())) {
-            multiplier = multiplier.add(WEEKEND_MULTIPLIER.subtract(BigDecimal.ONE)); // Add weekend premium
+            multiplier = multiplier.add(WEEKEND_MULTIPLIER.subtract(BigDecimal.ONE));
         }
 
         return overtimeHours.multiply(hourlyRate).multiply(multiplier).setScale(2, RoundingMode.HALF_UP);
     }
 
     /**
-     * Calculates total overtime hours for an employee in a specific period
-     * @param employeeId Employee ID
-     * @param startDate Start date of period
-     * @param endDate End date of period
-     * @return Total approved overtime hours
+     * Legacy method for backward compatibility
+     */
+    public BigDecimal calculateOvertimePay(OvertimeRequestModel overtimeRequest, BigDecimal hourlyRate) {
+        return calculateRankAndFileOvertimePay(overtimeRequest, hourlyRate);
+    }
+
+    /**
+     * Calculate total overtime hours for rank-and-file employee
      */
     public BigDecimal calculateTotalOvertimeHours(Integer employeeId, LocalDate startDate, LocalDate endDate) {
         try {
+            if (!isEligibleForOvertime(employeeId)) {
+                return BigDecimal.ZERO;
+            }
+
             LocalDateTime startDateTime = startDate.atStartOfDay();
             LocalDateTime endDateTime = endDate.atTime(23, 59, 59);
 
@@ -332,7 +317,7 @@ public class OvertimeService {
             return overtimeRequests.stream()
                     .filter(req -> req.getEmployeeId() != null && req.getEmployeeId().equals(employeeId))
                     .filter(OvertimeRequestModel::isApproved)
-                    .map(OvertimeRequestModel::getOvertimeHours)
+                    .map(req -> BigDecimal.valueOf(req.getOvertimeHours()))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         } catch (Exception e) {
@@ -342,20 +327,21 @@ public class OvertimeService {
     }
 
     /**
-     * Calculates total overtime pay for an employee in a specific month
-     * @param employeeId Employee ID
-     * @param yearMonth Year and month
-     * @return Total overtime pay for the month
+     * Calculate monthly overtime pay for rank-and-file employee
      */
     public BigDecimal calculateMonthlyOvertimePay(Integer employeeId, YearMonth yearMonth) {
         try {
+            if (!isEligibleForOvertime(employeeId)) {
+                return BigDecimal.ZERO;
+            }
+
             EmployeeModel employee = employeeDAO.findById(employeeId);
             if (employee == null || employee.getHourlyRate() == null) {
                 return BigDecimal.ZERO;
             }
 
             return overtimeDAO.getTotalOvertimePay(employeeId, yearMonth.getYear(),
-                    yearMonth.getMonthValue(), OVERTIME_MULTIPLIER);
+                    yearMonth.getMonthValue(), RANK_AND_FILE_OVERTIME_MULTIPLIER);
 
         } catch (Exception e) {
             System.err.println("Error calculating monthly overtime pay: " + e.getMessage());
@@ -363,17 +349,14 @@ public class OvertimeService {
         }
     }
 
-    // ================================
     // VALIDATION AND BUSINESS RULES
-    // ================================
 
     /**
-     * Validates an overtime request before submission
+     * Validate overtime request
      */
     private OvertimeValidationResult validateOvertimeRequest(Integer employeeId, LocalDateTime overtimeStart, LocalDateTime overtimeEnd) {
         OvertimeValidationResult result = new OvertimeValidationResult();
 
-        // Validate times
         if (overtimeStart == null || overtimeEnd == null) {
             result.setValid(false);
             result.setErrorMessage("Start time and end time are required");
@@ -386,7 +369,12 @@ public class OvertimeService {
             return result;
         }
 
-        // Check minimum overtime duration
+        if (!isValidOvertimeDate(overtimeStart.toLocalDate())) {
+            result.setValid(false);
+            result.setErrorMessage("Overtime can only be requested for today or future dates (Manila time)");
+            return result;
+        }
+
         Duration duration = Duration.between(overtimeStart, overtimeEnd);
         if (duration.toMinutes() < MIN_OVERTIME_MINUTES) {
             result.setValid(false);
@@ -394,7 +382,6 @@ public class OvertimeService {
             return result;
         }
 
-        // Check maximum daily overtime
         BigDecimal requestedHours = new BigDecimal(duration.toMinutes()).divide(new BigDecimal(60), 2, RoundingMode.HALF_UP);
         if (requestedHours.compareTo(new BigDecimal(MAX_DAILY_OVERTIME_HOURS)) > 0) {
             result.setValid(false);
@@ -402,25 +389,25 @@ public class OvertimeService {
             return result;
         }
 
-        // Check if employee has regular attendance for the day
-        LocalDate overtimeDate = overtimeStart.toLocalDate();
-        // FIXED: Use correct method name and parameter type
-        AttendanceModel attendance = attendanceDAO.getAttendanceByEmployeeAndDate(employeeId, Date.valueOf(overtimeDate));
-        if (attendance == null || !attendance.isComplete()) {
-            result.setValid(false);
-            result.setErrorMessage("Employee must have complete regular attendance before requesting overtime");
-            return result;
+        try {
+            LocalDate overtimeDate = overtimeStart.toLocalDate();
+            AttendanceModel attendance = attendanceDAO.getAttendanceByEmployeeAndDate(employeeId, Date.valueOf(overtimeDate));
+            if (attendance == null || !attendance.isComplete()) {
+                result.setValid(false);
+                result.setErrorMessage("Employee must have complete regular attendance before requesting overtime");
+                return result;
+            }
+        } catch (Exception e) {
+            System.out.println("Warning: Could not verify attendance for overtime request: " + e.getMessage());
         }
 
-        // Check weekly overtime limits
-        BigDecimal weeklyOvertimeHours = calculateWeeklyOvertimeHours(employeeId, overtimeDate);
+        BigDecimal weeklyOvertimeHours = calculateWeeklyOvertimeHours(employeeId, overtimeStart.toLocalDate());
         if (weeklyOvertimeHours.add(requestedHours).compareTo(new BigDecimal(MAX_WEEKLY_OVERTIME_HOURS)) > 0) {
             result.setValid(false);
             result.setErrorMessage("Weekly overtime limit of " + MAX_WEEKLY_OVERTIME_HOURS + " hours would be exceeded");
             return result;
         }
 
-        // Check for overlapping overtime requests
         List<OvertimeRequestModel> existingRequests = overtimeDAO.findByEmployee(employeeId);
         for (OvertimeRequestModel existing : existingRequests) {
             if (existing.getApprovalStatus() == ApprovalStatus.APPROVED || existing.getApprovalStatus() == ApprovalStatus.PENDING) {
@@ -437,43 +424,61 @@ public class OvertimeService {
     }
 
     /**
-     * Checks if two time ranges overlap
+     * Check if two time ranges overlap
      */
     private boolean timesOverlap(LocalDateTime start1, LocalDateTime end1, LocalDateTime start2, LocalDateTime end2) {
         return !(end1.isBefore(start2) || start1.isAfter(end2));
     }
 
     /**
-     * Calculates weekly overtime hours for an employee
+     * Calculate weekly overtime hours for an employee
      */
     private BigDecimal calculateWeeklyOvertimeHours(Integer employeeId, LocalDate date) {
-        // Get start of week (Monday)
         LocalDate startOfWeek = date.minusDays(date.getDayOfWeek().getValue() - 1);
         LocalDate endOfWeek = startOfWeek.plusDays(6);
-
         return calculateTotalOvertimeHours(employeeId, startOfWeek, endOfWeek);
     }
 
-    // ================================
-    // REPORTING AND QUERIES
-    // ================================
-
     /**
-     * Gets pending overtime requests for approval
+     * Check if overtime is during night shift (10 PM to 6 AM)
      */
-    public List<OvertimeRequestModel> getPendingOvertimeRequests() {
-        return overtimeDAO.findPendingOvertimeRequests();
+    private boolean isNightShift(LocalDateTime overtimeStart) {
+        int hour = overtimeStart.getHour();
+        return hour >= 22 || hour < 6;
     }
 
     /**
-     * Gets overtime requests for a specific employee
+     * Check if overtime is during weekend
+     */
+    private boolean isWeekend(LocalDateTime overtimeStart) {
+        int dayOfWeek = overtimeStart.getDayOfWeek().getValue();
+        return dayOfWeek == 6 || dayOfWeek == 7;
+    }
+
+    // REPORTING AND QUERIES
+
+    /**
+     * Get pending overtime requests for rank-and-file employees only
+     */
+    public List<OvertimeRequestModel> getPendingOvertimeRequests() {
+        List<OvertimeRequestModel> allPending = overtimeDAO.findPendingOvertimeRequests();
+        return allPending.stream()
+                .filter(req -> isEligibleForOvertime(req.getEmployeeId()))
+                .toList();
+    }
+
+    /**
+     * Get overtime requests for specific rank-and-file employee
      */
     public List<OvertimeRequestModel> getEmployeeOvertimeRequests(Integer employeeId) {
+        if (!isEligibleForOvertime(employeeId)) {
+            return new ArrayList<>();
+        }
         return overtimeDAO.findByEmployee(employeeId);
     }
 
     /**
-     * Gets overtime summary for an employee in a specific month
+     * Get overtime summary for rank-and-file employee
      */
     public OvertimeSummary getEmployeeOvertimeSummary(Integer employeeId, YearMonth yearMonth) {
         OvertimeSummary summary = new OvertimeSummary();
@@ -485,9 +490,15 @@ public class OvertimeService {
             if (employee != null) {
                 summary.setEmployeeName(employee.getFullName());
                 summary.setHourlyRate(employee.getHourlyRate());
+                summary.setIsRankAndFile(isEligibleForOvertime(employeeId));
             }
 
-            // Get overtime requests for the month
+            if (!isEligibleForOvertime(employeeId)) {
+                summary.setTotalOvertimeHours(BigDecimal.ZERO);
+                summary.setTotalOvertimePay(BigDecimal.ZERO);
+                return summary;
+            }
+
             LocalDateTime startOfMonth = yearMonth.atDay(1).atStartOfDay();
             LocalDateTime endOfMonth = yearMonth.atEndOfMonth().atTime(23, 59, 59);
 
@@ -498,10 +509,9 @@ public class OvertimeService {
 
             summary.setOvertimeRequests(monthlyRequests);
 
-            // Calculate totals
             BigDecimal totalHours = monthlyRequests.stream()
                     .filter(OvertimeRequestModel::isApproved)
-                    .map(OvertimeRequestModel::getOvertimeHours)
+                    .map(req -> BigDecimal.valueOf(req.getOvertimeHours()))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
 
             summary.setTotalOvertimeHours(totalHours);
@@ -523,15 +533,15 @@ public class OvertimeService {
     }
 
     /**
-     * Gets employees with most overtime hours in a period
+     * Get rank-and-file employees with most overtime hours
      */
     public List<OvertimeRanking> getTopOvertimeEmployees(LocalDate startDate, LocalDate endDate, int limit) {
         List<OvertimeRanking> rankings = new ArrayList<>();
 
         try {
-            List<EmployeeModel> activeEmployees = employeeDAO.getActiveEmployees();
+            List<EmployeeModel> rankAndFileEmployees = employeeDAO.getRankAndFileEmployees();
 
-            for (EmployeeModel employee : activeEmployees) {
+            for (EmployeeModel employee : rankAndFileEmployees) {
                 BigDecimal totalHours = calculateTotalOvertimeHours(employee.getEmployeeId(), startDate, endDate);
 
                 if (totalHours.compareTo(BigDecimal.ZERO) > 0) {
@@ -541,7 +551,7 @@ public class OvertimeService {
                     ranking.setTotalOvertimeHours(totalHours);
 
                     if (employee.getHourlyRate() != null) {
-                        BigDecimal totalPay = totalHours.multiply(employee.getHourlyRate()).multiply(OVERTIME_MULTIPLIER);
+                        BigDecimal totalPay = totalHours.multiply(employee.getHourlyRate()).multiply(RANK_AND_FILE_OVERTIME_MULTIPLIER);
                         ranking.setTotalOvertimePay(totalPay);
                     }
 
@@ -549,7 +559,6 @@ public class OvertimeService {
                 }
             }
 
-            // Sort by overtime hours (descending) and limit results
             rankings.sort((a, b) -> b.getTotalOvertimeHours().compareTo(a.getTotalOvertimeHours()));
 
             if (limit > 0 && rankings.size() > limit) {
@@ -563,9 +572,7 @@ public class OvertimeService {
         return rankings;
     }
 
-    // ================================
     // INNER CLASSES
-    // ================================
 
     /**
      * Result of overtime request operation
@@ -577,7 +584,6 @@ public class OvertimeService {
         private BigDecimal overtimeHours = BigDecimal.ZERO;
         private BigDecimal estimatedPay = BigDecimal.ZERO;
 
-        // Getters and setters
         public boolean isSuccess() { return success; }
         public void setSuccess(boolean success) { this.success = success; }
         public String getMessage() { return message; }
@@ -598,7 +604,6 @@ public class OvertimeService {
         private String message = "";
         private BigDecimal overtimePay = BigDecimal.ZERO;
 
-        // Getters and setters
         public boolean isSuccess() { return success; }
         public void setSuccess(boolean success) { this.success = success; }
         public String getMessage() { return message; }
@@ -614,7 +619,6 @@ public class OvertimeService {
         private boolean valid = false;
         private String errorMessage = "";
 
-        // Getters and setters
         public boolean isValid() { return valid; }
         public void setValid(boolean valid) { this.valid = valid; }
         public String getErrorMessage() { return errorMessage; }
@@ -622,13 +626,14 @@ public class OvertimeService {
     }
 
     /**
-     * Overtime summary for reporting
+     * Enhanced overtime summary for rank-and-file reporting
      */
     public static class OvertimeSummary {
         private Integer employeeId;
         private String employeeName;
         private YearMonth yearMonth;
         private BigDecimal hourlyRate = BigDecimal.ZERO;
+        private boolean isRankAndFile = false;
         private List<OvertimeRequestModel> overtimeRequests = new ArrayList<>();
         private BigDecimal totalOvertimeHours = BigDecimal.ZERO;
         private BigDecimal totalOvertimePay = BigDecimal.ZERO;
@@ -636,7 +641,6 @@ public class OvertimeService {
         private int pendingCount = 0;
         private int rejectedCount = 0;
 
-        // Getters and setters
         public Integer getEmployeeId() { return employeeId; }
         public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
         public String getEmployeeName() { return employeeName; }
@@ -645,6 +649,8 @@ public class OvertimeService {
         public void setYearMonth(YearMonth yearMonth) { this.yearMonth = yearMonth; }
         public BigDecimal getHourlyRate() { return hourlyRate; }
         public void setHourlyRate(BigDecimal hourlyRate) { this.hourlyRate = hourlyRate; }
+        public boolean isRankAndFile() { return isRankAndFile; }
+        public void setIsRankAndFile(boolean isRankAndFile) { this.isRankAndFile = isRankAndFile; }
         public List<OvertimeRequestModel> getOvertimeRequests() { return overtimeRequests; }
         public void setOvertimeRequests(List<OvertimeRequestModel> overtimeRequests) { this.overtimeRequests = overtimeRequests; }
         public BigDecimal getTotalOvertimeHours() { return totalOvertimeHours; }
@@ -666,10 +672,24 @@ public class OvertimeService {
             if (getTotalRequests() == 0) return BigDecimal.ZERO;
             return totalOvertimeHours.divide(new BigDecimal(getTotalRequests()), 2, RoundingMode.HALF_UP);
         }
+
+        public String getEmployeeCategory() {
+            return isRankAndFile ? "Rank-and-File (Overtime Eligible)" : "Non Rank-and-File (Not Eligible)";
+        }
+
+        public String getOvertimeMultiplier() {
+            return isRankAndFile ? "1.25x (Rank-and-File Rate)" : "N/A (Not Eligible)";
+        }
+
+        @Override
+        public String toString() {
+            return String.format("OvertimeSummary{employee=%s, category=%s, hours=%.2f, pay=₱%.2f, requests=%d}",
+                    employeeName, getEmployeeCategory(), totalOvertimeHours, totalOvertimePay, getTotalRequests());
+        }
     }
 
     /**
-     * Overtime ranking for top performers
+     * Enhanced overtime ranking for rank-and-file employees
      */
     public static class OvertimeRanking {
         private Integer employeeId;
@@ -677,7 +697,6 @@ public class OvertimeService {
         private BigDecimal totalOvertimeHours = BigDecimal.ZERO;
         private BigDecimal totalOvertimePay = BigDecimal.ZERO;
 
-        // Getters and setters
         public Integer getEmployeeId() { return employeeId; }
         public void setEmployeeId(Integer employeeId) { this.employeeId = employeeId; }
         public String getEmployeeName() { return employeeName; }
@@ -689,7 +708,8 @@ public class OvertimeService {
 
         @Override
         public String toString() {
-            return String.format("%s: %.2f hours, ₱%.2f", employeeName, totalOvertimeHours, totalOvertimePay);
+            return String.format("%s (Rank-and-File): %.2f hours, ₱%.2f at 1.25x rate", 
+                    employeeName, totalOvertimeHours, totalOvertimePay);
         }
     }
 }
