@@ -6,7 +6,9 @@ import java.math.RoundingMode;
 import java.sql.*;
 import java.time.LocalDate;
 import java.util.List;
-
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.time.LocalDateTime;
 /**
  * Data Access Object for PayrollModel entities.
  * This class handles all database operations related to payroll processing.
@@ -15,6 +17,7 @@ import java.util.List;
  */
 public class PayrollDAO extends BaseDAO<PayrollModel, Integer> {
     
+    public static final ZoneId MANILA_TIMEZONE = ZoneId.of("Asia/Manila");
     /**
      * Constructor that accepts a DatabaseConnection instance
      * @param databaseConnection The database connection to use for all operations
@@ -398,6 +401,9 @@ public class PayrollDAO extends BaseDAO<PayrollModel, Integer> {
         return false;
     }
     
+    public LocalDateTime getCurrentManilaTime() {
+        return LocalDateTime.now(MANILA_TIMEZONE);
+    }
 
     // HELPER METHODS
 
@@ -456,7 +462,7 @@ public class PayrollDAO extends BaseDAO<PayrollModel, Integer> {
         payroll.setTotalBenefit(totalBenefits);
         
         // Calculate overtime pay
-        BigDecimal overtimePay = calculateOvertimePay(employeeId, periodStart, periodEnd, hourlyRate);
+        BigDecimal overtimePay = calculateOvertimePayEnhanced(employeeId, periodStart, periodEnd, hourlyRate);
         
         // Calculate gross income (basic + overtime + benefits)
         BigDecimal grossIncome = basicSalary.add(overtimePay).add(totalBenefits);
@@ -512,7 +518,7 @@ public class PayrollDAO extends BaseDAO<PayrollModel, Integer> {
      * @param hourlyRate The employee's hourly rate
      * @return Total overtime pay
      */
-    private BigDecimal calculateOvertimePay(Integer employeeId, LocalDate periodStart, LocalDate periodEnd, BigDecimal hourlyRate) {
+    private BigDecimal calculateOvertimePayEnhanced(Integer employeeId, LocalDate periodStart, LocalDate periodEnd, BigDecimal hourlyRate) {
         String sql = "SELECT COALESCE(SUM(TIMESTAMPDIFF(MINUTE, overtimeStart, overtimeEnd)), 0) as totalMinutes " +
                     "FROM overtimerequest " +
                     "WHERE employeeId = ? AND approvalStatus = 'Approved' " +

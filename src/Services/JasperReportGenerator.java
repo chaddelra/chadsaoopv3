@@ -10,16 +10,21 @@ import java.io.*;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
- * Comprehensive JasperReports generator for MotorPH Payroll System
- * Handles various report types including payslips, attendance, employee lists, etc.
- * Integrates with your existing DAO structure
- * @author chadley
+ * Enhanced JasperReports generator for MotorPH Payroll System
+ * Leverages database views for complex payroll calculations
+ * Uses monthly_employee_payslip and monthly_payroll_summary_report views
+ * @author chad
  */
-
 public class JasperReportGenerator {
+    
+    // Manila timezone constant
+    public static final ZoneId MANILA_TIMEZONE = ZoneId.of("Asia/Manila");
+    
     private final DatabaseConnection databaseConnection;
     private final ReferenceDataDAO referenceDataDAO;
     private final EmployeeDAO employeeDAO;
@@ -41,8 +46,199 @@ public class JasperReportGenerator {
         createOutputDirectory();
     }
     
+    // ================================
+    // DATABASE VIEW-BASED REPORT METHODS
+    // ================================
+    
     /**
-     * Generates a payslip report for a specific employee and pay period
+     * Generates payslip using monthly_employee_payslip view
+     * This leverages all the complex business logic in the database view
+     * @param employeeId Employee ID
+     * @param payMonth Pay month in YYYY-MM format
+     * @param format Output format ("PDF", "EXCEL", "XLSX")
+     * @return Generated file path
+     */
+    public String generatePayslipFromView(Integer employeeId, String payMonth, String format) {
+        try {
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("EMPLOYEE_ID", employeeId);
+            parameters.put("PAY_MONTH", payMonth);
+            parameters.put("COMPANY_NAME", "MotorPH");
+            parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
+            
+            // Get employee details for filename
+            var employee = employeeDAO.findById(employeeId);
+            String employeeName = employee != null ? employee.getLastName() : "Employee";
+            
+            // Use the database view for complete payslip data
+            List<Map<String, Object>> payslipData = getPayslipDataFromView(employeeId, payMonth);
+            
+            if (payslipData.isEmpty()) {
+                System.err.println("No payslip data found for employee " + employeeId + " in " + payMonth);
+                return null;
+            }
+            
+            // Add rank-and-file information
+            boolean isRankAndFile = employeeDAO.isEmployeeRankAndFile(employeeId);
+            parameters.put("IS_RANK_AND_FILE", isRankAndFile);
+            parameters.put("OVERTIME_ELIGIBLE", isRankAndFile ? "Yes (1.25x rate)" : "No");
+            
+            JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(payslipData);
+            
+            String templatePath = REPORTS_PATH + "payslip_view_template.jrxml";
+            String outputFileName = String.format("Payslip_%s_%s_%s.%s", 
+                employeeName, employeeId, payMonth, format.toLowerCase());
+            
+            System.out.println("✅ Generating payslip from database view for employee: " + employeeId);
+            return generateReport(templatePath, parameters, dataSource, outputFileName, format);
+            
+        } catch (Exception e) {
+            System.err.println("Error generating payslip from view: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
+    /**
+     * Generates monthly payroll summary using monthly_payroll_summary_report view
+     * @param payMonth Pay month in YYYY-MM format
+     * @param format Output format
+     * @return Generated file path
+     */
+    public String generateMonthlyPayrollSummaryFromView(String payMonth, String format) {
+        try {
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("PAY_MONTH", payMonth);
+            parameters.put("COMPANY_NAME", "MotorPH");
+            parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
+            
+            // Use the database view for complete summary
+            List<Map<String, Object>> summaryData = getPayrollSummaryFromView(payMonth);
+            
+            if (summaryData.isEmpty()) {
+                System.err.println("No payroll summary data found for " + payMonth);
+                return null;
+            }
+            
+            // Calculate totals from the view data
+            PayrollTotals totals = calculateTotalsFromSummary(summaryData);
+            parameters.put("TOTAL_EMPLOYEES", totals.getEmployeeCount());
+            parameters.put("TOTAL_GROSS_INCOME", totals.getTotalGrossIncome());
+            parameters.put("TOTAL_BENEFITS", totals.getTotalBenefits());
+            parameters.put("TOTAL_DEDUCTIONS", totals.getTotalDeductions());
+            parameters.put("TOTAL_NET_PAY", totals.getTotalNetPay());
+            
+            JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(summaryData);
+            
+            String templatePath = REPORTS_PATH + "payroll_summary_view_template.jrxml";
+            String outputFileName = String.format("Payroll_Summary_%s.%s", payMonth, format.toLowerCase());
+            
+            System.out.println("✅ Generating payroll summary from database view for: " + payMonth);
+            return generateReport(templatePath, parameters, dataSource, outputFileName, format);
+            
+        } catch (Exception e) {
+            System.err.println("Error generating payroll summary from view: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
+    /**
+     * Generates rank-and-file overtime report using database views
+     * @param payMonth Pay month in YYYY-MM format
+     * @param format Output format
+     * @return Generated file path
+     */
+    public String generateRankAndFileOvertimeReport(String payMonth, String format) {
+        try {
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("PAY_MONTH", payMonth);
+            parameters.put("COMPANY_NAME", "MotorPH");
+            parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
+            
+            // Get overtime data for rank-and-file employees only
+            List<Map<String, Object>> overtimeData = getRankAndFileOvertimeFromView(payMonth);
+            
+            if (overtimeData.isEmpty()) {
+                System.err.println("No rank-and-file overtime data found for " + payMonth);
+                return null;
+            }
+            
+            // Calculate overtime totals
+            double totalOvertimeHours = overtimeData.stream()
+                    .mapToDouble(row -> ((Number) row.getOrDefault("Overtime Hours", 0)).doubleValue())
+                    .sum();
+            
+            parameters.put("TOTAL_OVERTIME_HOURS", totalOvertimeHours);
+            parameters.put("ELIGIBLE_EMPLOYEES", overtimeData.size());
+            parameters.put("OVERTIME_RATE", "1.25x (Rank-and-File Rate)");
+            
+            JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(overtimeData);
+            
+            String templatePath = REPORTS_PATH + "rank_and_file_overtime_template.jrxml";
+            String outputFileName = String.format("Rank_And_File_Overtime_%s.%s", payMonth, format.toLowerCase());
+            
+            System.out.println("✅ Generating rank-and-file overtime report from database view for: " + payMonth);
+            return generateReport(templatePath, parameters, dataSource, outputFileName, format);
+            
+        } catch (Exception e) {
+            System.err.println("Error generating rank-and-file overtime report: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
+    /**
+     * Generates government compliance report using database views
+     * @param payMonth Pay month in YYYY-MM format
+     * @param format Output format
+     * @return Generated file path
+     */
+    public String generateGovernmentComplianceReport(String payMonth, String format) {
+        try {
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("PAY_MONTH", payMonth);
+            parameters.put("COMPANY_NAME", "MotorPH");
+            parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
+            
+            // Get compliance data from view
+            Map<String, Object> complianceData = getGovernmentComplianceFromView(payMonth);
+            
+            if (complianceData.isEmpty()) {
+                System.err.println("No compliance data found for " + payMonth);
+                return null;
+            }
+            
+            // Add compliance data to parameters
+            parameters.putAll(complianceData);
+            
+            // Create a single-row data source for the compliance report
+            List<Map<String, Object>> reportData = Arrays.asList(complianceData);
+            JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(reportData);
+            
+            String templatePath = REPORTS_PATH + "government_compliance_template.jrxml";
+            String outputFileName = String.format("Government_Compliance_%s.%s", payMonth, format.toLowerCase());
+            
+            System.out.println("✅ Generating government compliance report from database view for: " + payMonth);
+            return generateReport(templatePath, parameters, dataSource, outputFileName, format);
+            
+        } catch (Exception e) {
+            System.err.println("Error generating government compliance report: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+    
+    // ================================
+    // LEGACY REPORT METHODS (Enhanced)
+    // ================================
+    
+    /**
+     * Generates a payslip report for a specific employee and pay period (legacy method)
      * @param employeeId Employee ID
      * @param payPeriodId Pay period ID
      * @param format Output format ("PDF", "EXCEL", "XLSX")
@@ -50,35 +246,9 @@ public class JasperReportGenerator {
      */
     public String generatePayslipReport(Integer employeeId, Integer payPeriodId, String format) {
         try {
-            // Prepare report data
-            Map<String, Object> parameters = new HashMap<>();
-            
-            // Get employee details
-            var employee = employeeDAO.findById(employeeId);
-            if (employee == null) {
-                throw new IllegalArgumentException("Employee not found: " + employeeId);
-            }
-            
-            // Get pay period info
-            String payPeriodQuery = "SELECT * FROM payperiod WHERE payPeriodId = ?";
-            
-            // Add parameters for the report
-            parameters.put("EMPLOYEE_ID", employeeId);
-            parameters.put("PAY_PERIOD_ID", payPeriodId);
-            parameters.put("EMPLOYEE_NAME", employee.getFirstName() + " " + employee.getLastName());
-            parameters.put("COMPANY_NAME", "MotorPH");
-            parameters.put("REPORT_DATE", new Date());
-            
-            // Get payroll data (you'll need to adjust this based on your payroll tables)
-            List<Map<String, Object>> payrollData = getPayrollData(employeeId, payPeriodId);
-            JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(payrollData);
-            
-            // Generate report
-            String templatePath = REPORTS_PATH + "payslip_template.jrxml";
-            String outputFileName = String.format("Payslip_%s_%s_%s.%s", 
-                employee.getLastName(), employeeId, payPeriodId, format.toLowerCase());
-            
-            return generateReport(templatePath, parameters, dataSource, outputFileName, format);
+            // Convert payPeriodId to payMonth format for view-based generation
+            String payMonth = getCurrentMonthString(); // You might want to get actual month from payPeriodId
+            return generatePayslipFromView(employeeId, payMonth, format);
             
         } catch (Exception e) {
             System.err.println("Error generating payslip report: " + e.getMessage());
@@ -102,6 +272,7 @@ public class JasperReportGenerator {
             parameters.put("END_DATE", java.sql.Date.valueOf(endDate));
             parameters.put("COMPANY_NAME", "MotorPH");
             parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
             
             String reportScope = "All_Employees";
             if (employeeId != null) {
@@ -142,11 +313,12 @@ public class JasperReportGenerator {
             Map<String, Object> parameters = new HashMap<>();
             parameters.put("COMPANY_NAME", "MotorPH");
             parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
             parameters.put("DEPARTMENT_FILTER", department != null ? department : "All Departments");
             parameters.put("STATUS_FILTER", status != null ? status : "All Statuses");
             
-            // Get employee data
-            List<Map<String, Object>> employeeData = getEmployeeListData(department, status);
+            // Get employee data with rank-and-file classification
+            List<Map<String, Object>> employeeData = getEmployeeListDataWithClassification(department, status);
             JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(employeeData);
             
             String templatePath = REPORTS_PATH + "employee_list_template.jrxml";
@@ -181,6 +353,7 @@ public class JasperReportGenerator {
             parameters.put("END_DATE", java.sql.Date.valueOf(endDate));
             parameters.put("COMPANY_NAME", "MotorPH");
             parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
             
             String reportScope = "All_Employees";
             if (employeeId != null) {
@@ -240,6 +413,7 @@ public class JasperReportGenerator {
             parameters.put("END_DATE", java.sql.Date.valueOf(endDate));
             parameters.put("COMPANY_NAME", "MotorPH");
             parameters.put("REPORT_DATE", new Date());
+            parameters.put("GENERATED_DATE", LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("MMMM dd, yyyy")));
             
             String reportScope = "All_Employees";
             if (employeeId != null) {
@@ -276,22 +450,9 @@ public class JasperReportGenerator {
      */
     public String generatePayrollSummaryReport(Integer payPeriodId, String department, String format) {
         try {
-            Map<String, Object> parameters = new HashMap<>();
-            parameters.put("PAY_PERIOD_ID", payPeriodId);
-            parameters.put("COMPANY_NAME", "MotorPH");
-            parameters.put("REPORT_DATE", new Date());
-            parameters.put("DEPARTMENT_FILTER", department != null ? department : "All Departments");
-            
-            // Get payroll summary data
-            List<Map<String, Object>> payrollSummaryData = getPayrollSummaryData(payPeriodId, department);
-            JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(payrollSummaryData);
-            
-            String templatePath = REPORTS_PATH + "payroll_summary_template.jrxml";
-            String outputFileName = String.format("Payroll_Summary_%s_%s_%s.%s", 
-                payPeriodId, department != null ? department : "All", 
-                LocalDate.now().toString(), format.toLowerCase());
-            
-            return generateReport(templatePath, parameters, dataSource, outputFileName, format);
+            // Convert to current month for view-based generation
+            String payMonth = getCurrentMonthString();
+            return generateMonthlyPayrollSummaryFromView(payMonth, format);
             
         } catch (Exception e) {
             System.err.println("Error generating payroll summary report: " + e.getMessage());
@@ -299,6 +460,211 @@ public class JasperReportGenerator {
             return null;
         }
     }
+    
+    // ================================
+    // DATABASE VIEW DATA RETRIEVAL METHODS
+    // ================================
+    
+    /**
+     * Gets payslip data from monthly_employee_payslip view
+     * @param employeeId Employee ID
+     * @param payMonth Pay month in YYYY-MM format
+     * @return List of payslip data
+     */
+    private List<Map<String, Object>> getPayslipDataFromView(Integer employeeId, String payMonth) {
+        String sql = """
+            SELECT * FROM monthly_employee_payslip
+            WHERE `Employee ID` = ?
+            AND DATE_FORMAT(`Period Start Date`, '%Y-%m') = ?
+            """;
+        
+        return executeQuery(sql, employeeId, payMonth);
+    }
+    
+    /**
+     * Gets payroll summary data from monthly_payroll_summary_report view
+     * @param payMonth Pay month in YYYY-MM format
+     * @return List of payroll summary data
+     */
+    private List<Map<String, Object>> getPayrollSummaryFromView(String payMonth) {
+        String sql = """
+            SELECT * FROM monthly_payroll_summary_report
+            WHERE DATE_FORMAT(`Pay Date`, '%Y-%m') = ?
+            AND `Employee ID` != 'TOTAL'
+            ORDER BY `Employee ID`
+            """;
+        
+        return executeQuery(sql, payMonth);
+    }
+    
+    /**
+     * Gets rank-and-file overtime data from monthly_employee_payslip view
+     * @param payMonth Pay month in YYYY-MM format
+     * @return List of overtime data for rank-and-file employees only
+     */
+    private List<Map<String, Object>> getRankAndFileOvertimeFromView(String payMonth) {
+        String sql = """
+            SELECT p.`Employee ID`, p.`Employee Name`, p.`Department`, 
+                   p.`Overtime Hours`, p.`Daily Rate`, p.`Employee Position`
+            FROM monthly_employee_payslip p
+            JOIN employee e ON p.`Employee ID` = e.employeeId
+            JOIN position pos ON e.positionId = pos.positionId
+            WHERE DATE_FORMAT(p.`Period Start Date`, '%Y-%m') = ?
+            AND p.`Overtime Hours` > 0
+            AND (LOWER(pos.department) = 'rank-and-file' 
+                 OR LOWER(pos.position) LIKE '%rank%file%')
+            ORDER BY p.`Overtime Hours` DESC
+            """;
+        
+        return executeQuery(sql, payMonth);
+    }
+    
+    /**
+     * Gets government compliance data from monthly_payroll_summary_report view
+     * @param payMonth Pay month in YYYY-MM format
+     * @return Map of compliance totals
+     */
+    private Map<String, Object> getGovernmentComplianceFromView(String payMonth) {
+        String sql = """
+            SELECT 
+                COUNT(*) as totalEmployees,
+                SUM(`Social Security Contribution`) as totalSSS,
+                SUM(`Philhealth Contribution`) as totalPhilHealth,
+                SUM(`Pag-Ibig Contribution`) as totalPagIbig,
+                SUM(`Withholding Tax`) as totalWithholdingTax
+            FROM monthly_payroll_summary_report
+            WHERE DATE_FORMAT(`Pay Date`, '%Y-%m') = ?
+            AND `Employee ID` != 'TOTAL'
+            """;
+        
+        List<Map<String, Object>> results = executeQuery(sql, payMonth);
+        return results.isEmpty() ? new HashMap<>() : results.get(0);
+    }
+    
+    // ================================
+    // LEGACY DATA RETRIEVAL METHODS
+    // ================================
+    
+    private List<Map<String, Object>> getAttendanceData(Integer employeeId, LocalDate startDate, LocalDate endDate) {
+        StringBuilder sql = new StringBuilder("""
+            SELECT e.employeeId, e.firstName, e.lastName,
+                   a.date as attendanceDate, a.timeIn, a.timeOut
+            FROM employee e
+            LEFT JOIN attendance a ON e.employeeId = a.employeeId
+            WHERE a.date BETWEEN ? AND ?
+            """);
+        
+        List<Object> params = new ArrayList<>();
+        params.add(java.sql.Date.valueOf(startDate));
+        params.add(java.sql.Date.valueOf(endDate));
+        
+        if (employeeId != null) {
+            sql.append(" AND e.employeeId = ?");
+            params.add(employeeId);
+        }
+        
+        sql.append(" ORDER BY e.lastName, e.firstName, a.date");
+        
+        return executeQuery(sql.toString(), params.toArray());
+    }
+    
+    private List<Map<String, Object>> getEmployeeListDataWithClassification(String department, String status) {
+        StringBuilder sql = new StringBuilder("""
+            SELECT e.employeeId, e.firstName, e.lastName, e.email, e.phoneNumber,
+                   e.status, e.userRole, p.position as positionTitle, p.department, e.basicSalary,
+                   CASE WHEN (LOWER(p.department) = 'rank-and-file' 
+                             OR LOWER(p.position) LIKE '%rank%file%') 
+                        THEN 'Rank-and-File' 
+                        ELSE 'Non Rank-and-File' END as employeeCategory,
+                   CASE WHEN (LOWER(p.department) = 'rank-and-file' 
+                             OR LOWER(p.position) LIKE '%rank%file%') 
+                        THEN 'Yes (1.25x rate)' 
+                        ELSE 'No' END as overtimeEligible
+            FROM employee e
+            JOIN position p ON e.positionId = p.positionId
+            WHERE 1=1
+            """);
+        
+        List<Object> params = new ArrayList<>();
+        
+        if (department != null && !department.trim().isEmpty()) {
+            sql.append(" AND p.department = ?");
+            params.add(department);
+        }
+        
+        if (status != null && !status.trim().isEmpty()) {
+            sql.append(" AND e.status = ?");
+            params.add(status);
+        }
+        
+        sql.append(" ORDER BY p.department, e.lastName, e.firstName");
+        
+        return executeQuery(sql.toString(), params.toArray());
+    }
+    
+    private List<Map<String, Object>> getLeaveData(Integer employeeId, LocalDate startDate, 
+                                                  LocalDate endDate, Integer leaveTypeId) {
+        StringBuilder sql = new StringBuilder("""
+            SELECT e.employeeId, e.firstName, e.lastName,
+                   lr.leaveRequestId, lr.leaveStart as startDate, lr.leaveEnd as endDate, 
+                   lr.approvalStatus as status, lt.leaveTypeName, lr.leaveReason as reason
+            FROM employee e
+            LEFT JOIN leaverequest lr ON e.employeeId = lr.employeeId
+            LEFT JOIN leavetype lt ON lr.leaveTypeId = lt.leaveTypeId
+            WHERE lr.leaveStart <= ? AND lr.leaveEnd >= ?
+            """);
+        
+        List<Object> params = new ArrayList<>();
+        params.add(java.sql.Date.valueOf(endDate));
+        params.add(java.sql.Date.valueOf(startDate));
+        
+        if (employeeId != null) {
+            sql.append(" AND e.employeeId = ?");
+            params.add(employeeId);
+        }
+        
+        if (leaveTypeId != null) {
+            sql.append(" AND lr.leaveTypeId = ?");
+            params.add(leaveTypeId);
+        }
+        
+        sql.append(" ORDER BY e.lastName, e.firstName, lr.leaveStart");
+        
+        return executeQuery(sql.toString(), params.toArray());
+    }
+    
+    private List<Map<String, Object>> getOvertimeData(Integer employeeId, LocalDate startDate, LocalDate endDate) {
+        StringBuilder sql = new StringBuilder("""
+            SELECT e.employeeId, e.firstName, e.lastName,
+                   o.overtimeStart, o.overtimeEnd, o.approvalStatus as status, o.overtimeReason as reason,
+                   TIMESTAMPDIFF(MINUTE, o.overtimeStart, o.overtimeEnd) / 60.0 as overtimeHours,
+                   CASE WHEN (LOWER(p.department) = 'rank-and-file' 
+                             OR LOWER(p.position) LIKE '%rank%file%') 
+                        THEN 'Yes (1.25x rate)' 
+                        ELSE 'Not Eligible' END as overtimeEligible
+            FROM employee e
+            LEFT JOIN overtimerequest o ON e.employeeId = o.employeeId
+            JOIN position p ON e.positionId = p.positionId
+            WHERE DATE(o.overtimeStart) BETWEEN ? AND ?
+            """);
+        
+        List<Object> params = new ArrayList<>();
+        params.add(java.sql.Date.valueOf(startDate));
+        params.add(java.sql.Date.valueOf(endDate));
+        
+        if (employeeId != null) {
+            sql.append(" AND e.employeeId = ?");
+            params.add(employeeId);
+        }
+        
+        sql.append(" ORDER BY e.lastName, e.firstName, o.overtimeStart");
+        
+        return executeQuery(sql.toString(), params.toArray());
+    }
+    
+    // ================================
+    // HELPER METHODS
+    // ================================
     
     /**
      * Core method to generate reports
@@ -352,150 +718,60 @@ public class JasperReportGenerator {
         }
     }
     
-    // DATA RETRIEVAL METHODS
-    // These methods retrieve data for reports - adjust SQL based on your actual database schema
-    
-    private List<Map<String, Object>> getPayrollData(Integer employeeId, Integer payPeriodId) {
-        String sql = """
-            SELECT e.employeeId, e.firstName, e.lastName, e.basicSalary, e.hourlyRate,
-                   p.positionTitle, p.department,
-                   pp.startDate, pp.endDate, pp.payDate,
-                   pr.grossPay, pr.netPay, pr.totalDeductions
-            FROM employee e
-            JOIN position p ON e.positionId = p.positionId
-            JOIN payperiod pp ON pp.payPeriodId = ?
-            LEFT JOIN payroll pr ON e.employeeId = pr.employeeId AND pr.payPeriodId = ?
-            WHERE e.employeeId = ?
-            """;
+    /**
+     * Calculates totals from payroll summary data
+     * @param summaryData List of payroll summary records
+     * @return PayrollTotals object
+     */
+    private PayrollTotals calculateTotalsFromSummary(List<Map<String, Object>> summaryData) {
+        PayrollTotals totals = new PayrollTotals();
         
-        return executeQuery(sql, payPeriodId, payPeriodId, employeeId);
+        for (Map<String, Object> row : summaryData) {
+            // Skip the TOTAL row if it exists
+            if ("TOTAL".equals(row.get("Employee ID"))) {
+                continue;
+            }
+            
+            totals.incrementEmployeeCount();
+            totals.addToTotalGrossIncome(getBigDecimalValue(row, "GROSS INCOME"));
+            totals.addToTotalBenefits(getBigDecimalValue(row, "TOTAL BENEFITS"));
+            totals.addToTotalDeductions(getBigDecimalValue(row, "TOTAL DEDUCTIONS"));
+            totals.addToTotalNetPay(getBigDecimalValue(row, "NET PAY"));
+        }
+        
+        return totals;
     }
     
-    private List<Map<String, Object>> getAttendanceData(Integer employeeId, LocalDate startDate, LocalDate endDate) {
-        StringBuilder sql = new StringBuilder("""
-            SELECT e.employeeId, e.firstName, e.lastName,
-                   a.attendanceDate, a.timeIn, a.timeOut, a.hoursWorked
-            FROM employee e
-            LEFT JOIN attendance a ON e.employeeId = a.employeeId
-            WHERE a.attendanceDate BETWEEN ? AND ?
-            """);
-        
-        List<Object> params = new ArrayList<>();
-        params.add(java.sql.Date.valueOf(startDate));
-        params.add(java.sql.Date.valueOf(endDate));
-        
-        if (employeeId != null) {
-            sql.append(" AND e.employeeId = ?");
-            params.add(employeeId);
+    /**
+     * Safely gets BigDecimal value from map
+     * @param row Data row
+     * @param key Column key
+     * @return BigDecimal value or ZERO if null/invalid
+     */
+    private java.math.BigDecimal getBigDecimalValue(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        if (value == null) {
+            return java.math.BigDecimal.ZERO;
         }
-        
-        sql.append(" ORDER BY e.lastName, e.firstName, a.attendanceDate");
-        
-        return executeQuery(sql.toString(), params.toArray());
+        if (value instanceof java.math.BigDecimal) {
+            return (java.math.BigDecimal) value;
+        }
+        if (value instanceof Number) {
+            return java.math.BigDecimal.valueOf(((Number) value).doubleValue());
+        }
+        try {
+            return new java.math.BigDecimal(value.toString());
+        } catch (NumberFormatException e) {
+            return java.math.BigDecimal.ZERO;
+        }
     }
     
-    private List<Map<String, Object>> getEmployeeListData(String department, String status) {
-        StringBuilder sql = new StringBuilder("""
-            SELECT e.employeeId, e.firstName, e.lastName, e.email, e.phoneNumber,
-                   e.status, e.userRole, p.positionTitle, p.department, e.basicSalary
-            FROM employee e
-            JOIN position p ON e.positionId = p.positionId
-            WHERE 1=1
-            """);
-        
-        List<Object> params = new ArrayList<>();
-        
-        if (department != null && !department.trim().isEmpty()) {
-            sql.append(" AND p.department = ?");
-            params.add(department);
-        }
-        
-        if (status != null && !status.trim().isEmpty()) {
-            sql.append(" AND e.status = ?");
-            params.add(status);
-        }
-        
-        sql.append(" ORDER BY p.department, e.lastName, e.firstName");
-        
-        return executeQuery(sql.toString(), params.toArray());
-    }
-    
-    private List<Map<String, Object>> getLeaveData(Integer employeeId, LocalDate startDate, 
-                                                  LocalDate endDate, Integer leaveTypeId) {
-        StringBuilder sql = new StringBuilder("""
-            SELECT e.employeeId, e.firstName, e.lastName,
-                   lr.leaveRequestId, lr.startDate, lr.endDate, lr.status,
-                   lt.leaveTypeName, lr.reason
-            FROM employee e
-            LEFT JOIN leaverequest lr ON e.employeeId = lr.employeeId
-            LEFT JOIN leavetype lt ON lr.leaveTypeId = lt.leaveTypeId
-            WHERE lr.startDate <= ? AND lr.endDate >= ?
-            """);
-        
-        List<Object> params = new ArrayList<>();
-        params.add(java.sql.Date.valueOf(endDate));
-        params.add(java.sql.Date.valueOf(startDate));
-        
-        if (employeeId != null) {
-            sql.append(" AND e.employeeId = ?");
-            params.add(employeeId);
-        }
-        
-        if (leaveTypeId != null) {
-            sql.append(" AND lr.leaveTypeId = ?");
-            params.add(leaveTypeId);
-        }
-        
-        sql.append(" ORDER BY e.lastName, e.firstName, lr.startDate");
-        
-        return executeQuery(sql.toString(), params.toArray());
-    }
-    
-    private List<Map<String, Object>> getOvertimeData(Integer employeeId, LocalDate startDate, LocalDate endDate) {
-        StringBuilder sql = new StringBuilder("""
-            SELECT e.employeeId, e.firstName, e.lastName,
-                   o.overtimeDate, o.overtimeHours, o.status, o.reason
-            FROM employee e
-            LEFT JOIN overtimerequest o ON e.employeeId = o.employeeId
-            WHERE o.overtimeDate BETWEEN ? AND ?
-            """);
-        
-        List<Object> params = new ArrayList<>();
-        params.add(java.sql.Date.valueOf(startDate));
-        params.add(java.sql.Date.valueOf(endDate));
-        
-        if (employeeId != null) {
-            sql.append(" AND e.employeeId = ?");
-            params.add(employeeId);
-        }
-        
-        sql.append(" ORDER BY e.lastName, e.firstName, o.overtimeDate");
-        
-        return executeQuery(sql.toString(), params.toArray());
-    }
-    
-    private List<Map<String, Object>> getPayrollSummaryData(Integer payPeriodId, String department) {
-        StringBuilder sql = new StringBuilder("""
-            SELECT p.department, COUNT(e.employeeId) as employeeCount,
-                   SUM(pr.grossPay) as totalGross, SUM(pr.netPay) as totalNet,
-                   SUM(pr.totalDeductions) as totalDeductions
-            FROM employee e
-            JOIN position p ON e.positionId = p.positionId
-            LEFT JOIN payroll pr ON e.employeeId = pr.employeeId AND pr.payPeriodId = ?
-            WHERE 1=1
-            """);
-        
-        List<Object> params = new ArrayList<>();
-        params.add(payPeriodId);
-        
-        if (department != null && !department.trim().isEmpty()) {
-            sql.append(" AND p.department = ?");
-            params.add(department);
-        }
-        
-        sql.append(" GROUP BY p.department ORDER BY p.department");
-        
-        return executeQuery(sql.toString(), params.toArray());
+    /**
+     * Gets current month string in YYYY-MM format
+     * @return Current month string
+     */
+    private String getCurrentMonthString() {
+        return LocalDate.now(MANILA_TIMEZONE).format(DateTimeFormatter.ofPattern("yyyy-MM"));
     }
     
     /**
@@ -573,5 +849,61 @@ public class JasperReportGenerator {
     public boolean templateExists(String templatePath) {
         File templateFile = new File(templatePath);
         return templateFile.exists() && templateFile.isFile();
+    }
+    
+    /**
+     * Gets current Manila date
+     * @return Current date in Manila timezone
+     */
+    public LocalDate getCurrentManilaDate() {
+        return LocalDate.now(MANILA_TIMEZONE);
+    }
+    
+    // ================================
+    // INNER CLASSES
+    // ================================
+    
+    /**
+     * Helper class for calculating payroll totals
+     */
+    public static class PayrollTotals {
+        private int employeeCount = 0;
+        private java.math.BigDecimal totalGrossIncome = java.math.BigDecimal.ZERO;
+        private java.math.BigDecimal totalBenefits = java.math.BigDecimal.ZERO;
+        private java.math.BigDecimal totalDeductions = java.math.BigDecimal.ZERO;
+        private java.math.BigDecimal totalNetPay = java.math.BigDecimal.ZERO;
+        
+        public void incrementEmployeeCount() {
+            this.employeeCount++;
+        }
+        
+        public void addToTotalGrossIncome(java.math.BigDecimal amount) {
+            this.totalGrossIncome = this.totalGrossIncome.add(amount != null ? amount : java.math.BigDecimal.ZERO);
+        }
+        
+        public void addToTotalBenefits(java.math.BigDecimal amount) {
+            this.totalBenefits = this.totalBenefits.add(amount != null ? amount : java.math.BigDecimal.ZERO);
+        }
+        
+        public void addToTotalDeductions(java.math.BigDecimal amount) {
+            this.totalDeductions = this.totalDeductions.add(amount != null ? amount : java.math.BigDecimal.ZERO);
+        }
+        
+        public void addToTotalNetPay(java.math.BigDecimal amount) {
+            this.totalNetPay = this.totalNetPay.add(amount != null ? amount : java.math.BigDecimal.ZERO);
+        }
+        
+        // Getters
+        public int getEmployeeCount() { return employeeCount; }
+        public java.math.BigDecimal getTotalGrossIncome() { return totalGrossIncome; }
+        public java.math.BigDecimal getTotalBenefits() { return totalBenefits; }
+        public java.math.BigDecimal getTotalDeductions() { return totalDeductions; }
+        public java.math.BigDecimal getTotalNetPay() { return totalNetPay; }
+        
+        @Override
+        public String toString() {
+            return String.format("PayrollTotals{employees=%d, gross=%s, benefits=%s, deductions=%s, net=%s}",
+                    employeeCount, totalGrossIncome, totalBenefits, totalDeductions, totalNetPay);
+        }
     }
 }
