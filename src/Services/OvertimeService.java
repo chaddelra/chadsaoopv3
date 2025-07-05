@@ -305,7 +305,7 @@ public class OvertimeService {
      */
     public BigDecimal calculateTotalOvertimeHours(Integer employeeId, LocalDate startDate, LocalDate endDate) {
         try {
-            if (!isEligibleForOvertime(employeeId)) {
+            if (employeeId == null || !isEligibleForOvertime(employeeId)) {
                 return BigDecimal.ZERO;
             }
 
@@ -392,7 +392,7 @@ public class OvertimeService {
         try {
             LocalDate overtimeDate = overtimeStart.toLocalDate();
             AttendanceModel attendance = attendanceDAO.getAttendanceByEmployeeAndDate(employeeId, Date.valueOf(overtimeDate));
-            if (attendance == null || !attendance.isComplete()) {
+            if (attendance == null || !attendance.isCompleteAttendance()) {
                 result.setValid(false);
                 result.setErrorMessage("Employee must have complete regular attendance before requesting overtime");
                 return result;
