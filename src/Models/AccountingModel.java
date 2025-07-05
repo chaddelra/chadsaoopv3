@@ -49,29 +49,44 @@ public class AccountingModel extends EmployeeModel {
         // Initialize services with database connection 
         this.payrollService = new PayrollService(dbConnection);
         this.reportService = new ReportService(dbConnection);
-        
-        // AttendanceService: Set to null for now until we see the actual constructor
-        // TODO: Fix AttendanceService constructor once we see the actual class
-        this.attendanceService = null;
-        System.out.println("Warning: AttendanceService not initialized - constructor signature unknown");
+        this.attendanceService = new AttendanceService(dbConnection);
         
         // Initialize DAOs with database connection
         this.employeeDAO = new EmployeeDAO(dbConnection);
         this.payrollDAO = new PayrollDAO(dbConnection);
         
-        // PayPeriodDAO: Try no arguments first, then DatabaseConnection
-        try {
-            this.payPeriodDAO = new PayPeriodDAO();
-        } catch (Exception e) {
-            try {
-                this.payPeriodDAO = new PayPeriodDAO(dbConnection);
-            } catch (Exception e2) {
-                System.err.println("Warning: Could not initialize PayPeriodDAO: " + e2.getMessage());
-                this.payPeriodDAO = null;
-            }
-        }
+        // PayPeriodDAO: Use no-argument constructor (doesn't accept DatabaseConnection)
+        this.payPeriodDAO = new PayPeriodDAO();
         
         System.out.println("Accounting user initialized: " + getFullName());
+    }
+
+    /**
+     * Constructor from existing EmployeeModel
+     */
+    public AccountingModel(EmployeeModel employee) {
+        // Call parent constructor with the 4 available parameters
+        super(employee.getFirstName(), employee.getLastName(), 
+              employee.getEmail(), employee.getUserRole());
+        
+        // Copy all fields from the source employee (including employeeId)
+        this.copyFromEmployeeModel(employee);
+        
+        // Create single database connection for all components
+        DatabaseConnection dbConnection = new DatabaseConnection();
+        
+        // Initialize Accounting-specific components with database connection
+        this.payrollService = new PayrollService(dbConnection);
+        this.reportService = new ReportService(dbConnection);
+        this.attendanceService = new AttendanceService(dbConnection);
+        
+        this.employeeDAO = new EmployeeDAO(dbConnection);
+        this.payrollDAO = new PayrollDAO(dbConnection);
+        
+        // PayPeriodDAO: Use no-argument constructor (doesn't accept DatabaseConnection)
+        this.payPeriodDAO = new PayPeriodDAO();
+        
+        System.out.println("Accounting user initialized from EmployeeModel: " + getFullName());
     }
 
     /**

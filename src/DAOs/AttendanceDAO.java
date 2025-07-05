@@ -14,6 +14,23 @@ public class AttendanceDAO {
     private static final String DB_USER = "root";
     private static final String DB_PASSWORD = "";
     
+    private DatabaseConnection databaseConnection;
+
+    /**
+     * Constructor with DatabaseConnection (for service compatibility)
+     * @param databaseConnection The database connection to use
+     */
+    public AttendanceDAO(DatabaseConnection databaseConnection) {
+        this.databaseConnection = databaseConnection;
+    }
+
+    /**
+     * Default constructor (maintains existing functionality)
+     */
+    public AttendanceDAO() {
+        this.databaseConnection = null; // Use existing connection method
+    }
+    
     // SQL Queries
     private static final String INSERT_ATTENDANCE = 
         "INSERT INTO attendance (date, timeIn, timeOut, employeeId) VALUES (?, ?, ?, ?)";
