@@ -7,6 +7,7 @@ import DAOs.TardinessRecordDAO;
 import DAOs.EmployeeDAO;
 import java.time.YearMonth;
 import java.math.BigDecimal;
+import DAOs.DatabaseConnection;
 
 import java.sql.Date;
 import java.sql.Time;
@@ -37,7 +38,14 @@ public class AttendanceService {
         // Removed employeeDAO initialization
     }
     
-    
+    /**
+     * Constructor with DatabaseConnection (for service compatibility)
+     * @param databaseConnection The database connection to use
+     */
+    public AttendanceService(DatabaseConnection databaseConnection) {
+        this.attendanceDAO = new AttendanceDAO(databaseConnection);
+        this.tardinessRecordDAO = new TardinessRecordDAO();
+    }
     
     public AttendanceService(AttendanceDAO attendanceDAO, TardinessRecordDAO tardinessRecordDAO) {
         this.attendanceDAO = attendanceDAO;
